@@ -1,6 +1,8 @@
-# Reaper Dev MCP Server
+#  ReaScript Function Definitions MCP Server
 
 This repo is forked from [Conceptual Machines](https://github.com/Conceptual-Machines/reaper-dev-mcp).
+
+The MCP server has two main tools, `search_functions` and `get_function_info`. These look up functions available in the ReaScript API in a JSON database (`data/reascript-api.json`). The database is generated from the official reaper `reascripthelp.html` page, either a local or remote copy. `search_functions` will return the name of a function, and then `get_function_info` will give its full definition including function arguments and return values.
 
 ### Changes:
 - Support for functions returning multiple values (eg `EnumProjectMarkers` in Lua and Python)
