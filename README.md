@@ -5,6 +5,7 @@ This repo is forked from [Conceptual Machines](https://github.com/Conceptual-Mac
 ### Changes:
 - Support for functions returning multiple values (eg `EnumProjectMarkers` in Lua and Python)
 - Support for filtering function lookup requests by language (`c`/`cpp`/`c++`, `eel`/`eel2`, `lua`, `py`/`python`)
+- Support for ranked search results based on multiple keywords
 - Function scraper script now generates from your local reascripthelp.html file, which can include third party functions added by extensions
 - Scraper support for per-language function naming conventions (eg RPR_FunctionName or reaper.FunctionName)
 

@@ -139,13 +139,53 @@ export class DataLoader {
   searchJSFXFunctions(query: string): JSFXFunction[] {
     const data = this.loadJSFX();
     if (!data || !data.functions) return [];
-    const lowerQuery = query.toLowerCase();
-    return data.functions.filter(
-      (f: JSFXFunction) =>
-        f.name.toLowerCase().includes(lowerQuery) ||
-        f.description.toLowerCase().includes(lowerQuery) ||
-        f.category.toLowerCase().includes(lowerQuery)
-    );
+
+    // Language aliases map for extracting from query (jsfx/eel2)
+    const LANGUAGE_ALIASES: Record<string, string[]> = { eel2: ["eel", "eel2", "jsfx"] };
+
+    // Split query into keywords
+    const rawKeywords = query.toLowerCase().split(/\s+/).filter(k => k.length > 0);
+
+    // Extract language from keywords if present (JSFX uses eel2)
+    let extractedLang: string | null = null;
+    for (const kw of rawKeywords) {
+      for (const [lang, aliases] of Object.entries(LANGUAGE_ALIASES)) {
+        if (aliases.includes(kw)) {
+          extractedLang = lang;
+          break;
+        }
+      }
+      if (extractedLang) break;
+    }
+
+    // If no valid keywords, return empty
+    if (rawKeywords.length === 0) return [];
+
+    const scoredResults: Array<{ func: JSFXFunction; score: number }> = data.functions.map((f: JSFXFunction) => {
+      const lowerName = f.name.toLowerCase();
+      const lowerDesc = (f.description || "").toLowerCase();
+      const lowerCat = (f.category || "").toLowerCase();
+      
+      // Count how many keywords match in name, description, or category
+      const matchedKeywords = rawKeywords.filter(keyword => 
+        lowerName.includes(keyword) || 
+        lowerDesc.includes(keyword) ||
+        lowerCat.includes(keyword)
+      );
+
+      return {
+        func: f,
+        score: matchedKeywords.length
+      };
+    }).filter((r: { func: JSFXFunction; score: number }) => r.score > 0);
+
+    // Sort by score (descending), then alphabetically for ties
+    scoredResults.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.func.name.localeCompare(b.func.name);
+    });
+
+    return scoredResults.map(r => r.func);
   }
 
   getReaScriptFunction(name: string, language?: string): ReaScriptFunction | null {
@@ -180,32 +220,75 @@ export class DataLoader {
   searchReaScriptFunctions(query: string, language?: string): ReaScriptFunction[] {
     const data = this.loadReaScript();
     if (!data || !data.functions) return [];
-    
-    // Normalize language alias
-    let normalizedLang = language?.toLowerCase();
-    if (normalizedLang === "c++" || normalizedLang === "cpp") {
-      normalizedLang = "c";
-    } else if (normalizedLang === "eel" || normalizedLang === "jsfx") {
-      normalizedLang = "eel2";
-    } else if (normalizedLang === "py") {
-      normalizedLang = "python";
+
+    // Normalize language alias helper
+    function normalizeLang(lang: string | undefined): string | undefined {
+      if (!lang) return undefined;
+      const l = lang.toLowerCase();
+      if (l === "c++" || l === "cpp") return "c";
+      if (l === "eel" || l === "jsfx") return "eel2";
+      if (l === "py") return "python";
+      return l;
     }
-    
-    const lowerQuery = query.toLowerCase();
-    let results = data.functions.filter(
-      (f: ReaScriptFunction) =>
-        f.name.toLowerCase().includes(lowerQuery) ||
-        (f.description && f.description.toLowerCase().includes(lowerQuery)) ||
-        (f.namespace && f.namespace.toLowerCase().includes(lowerQuery))
-    );
-    
-    // Filter by language if specified
-    if (normalizedLang && ["c", "eel2", "lua", "python"].includes(normalizedLang)) {
-      results = results.filter(
-        (f: ReaScriptFunction) => f.available_in.includes(normalizedLang as "c" | "eel2" | "lua" | "python")
+
+    // Language aliases map for extracting from query
+    const LANGUAGE_ALIASES: Record<string, string[]> = {
+      c: ["c", "cpp", "c++"],
+      eel2: ["eel", "eel2", "jsfx"],
+      lua: ["lua"],
+      python: ["python", "py"]
+    };
+
+    // Split query into keywords
+    const rawKeywords = query.toLowerCase().split(/\s+/).filter(k => k.length > 0);
+
+    // Extract language from keywords if present
+    let extractedLang: string | null = null;
+    for (const kw of rawKeywords) {
+      for (const [lang, aliases] of Object.entries(LANGUAGE_ALIASES)) {
+        if (aliases.includes(kw)) {
+          extractedLang = lang;
+          break;
+        }
+      }
+      if (extractedLang) break;
+    }
+
+    // Use explicit language param if provided, otherwise use extracted from query
+    const effectiveLang = normalizeLang(language || (extractedLang ?? undefined));
+
+    // If no valid keywords, return empty
+    if (rawKeywords.length === 0) return [];
+
+    const scoredResults: Array<{ func: ReaScriptFunction; score: number }> = data.functions.map((f: ReaScriptFunction) => {
+      const lowerName = f.name.toLowerCase();
+      const lowerDesc = (f.description || "").toLowerCase();
+      
+      // Count how many keywords match this function in name or description
+      const matchedKeywords = rawKeywords.filter(keyword => 
+        lowerName.includes(keyword) || 
+        lowerDesc.includes(keyword)
       );
+
+      return {
+        func: f,
+        score: matchedKeywords.length
+      };
+    }).filter((r: { func: ReaScriptFunction; score: number }) => r.score > 0); // Only include functions with at least one match
+
+    // Sort by score (descending), then alphabetically for ties
+    scoredResults.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.func.name.localeCompare(b.func.name);
+    });
+
+    let results = scoredResults.map((r: { func: ReaScriptFunction; score: number }) => r.func);
+
+    // Filter by language if specified (from param or extracted from query)
+    if (effectiveLang && ["c", "eel2", "lua", "python"].includes(effectiveLang)) {
+      results = results.filter(f => f.available_in.includes(effectiveLang as any));
     }
-    
+
     return results;
   }
 
@@ -235,19 +318,66 @@ export class DataLoader {
   searchReaWrapMethods(query: string): Array<{ class: string; name: string; method: any }> {
     const data = this.loadReaWrap();
     if (!data || !data.classes) return [];
-    const lowerQuery = query.toLowerCase();
-    const results: Array<{ class: string; name: string; method: any }> = [];
+
+    // Language aliases map for extracting from query (lua)
+    const LANGUAGE_ALIASES: Record<string, string[]> = { lua: ["lua"] };
+
+    // Split query into keywords
+    const rawKeywords = query.toLowerCase().split(/\s+/).filter(k => k.length > 0);
+
+    // Extract language from keywords if present (ReaWrap is Lua-only)
+    let extractedLang: string | null = null;
+    for (const kw of rawKeywords) {
+      for (const [lang, aliases] of Object.entries(LANGUAGE_ALIASES)) {
+        if (aliases.includes(kw)) {
+          extractedLang = lang;
+          break;
+        }
+      }
+      if (extractedLang) break;
+    }
+
+    // If no valid keywords, return empty
+    if (rawKeywords.length === 0) return [];
+
+    const scoredResults: Array<{ class: string; name: string; method: any; score: number }> = [];
     for (const cls of data.classes) {
       for (const method of cls.methods) {
-        if (
-          method.name.toLowerCase().includes(lowerQuery) ||
-          (method.description && method.description.toLowerCase().includes(lowerQuery)) ||
-          cls.name.toLowerCase().includes(lowerQuery)
-        ) {
-          results.push({ class: cls.name, name: method.name, method });
+        const lowerName = method.name.toLowerCase();
+        const lowerDesc = (method.description || "").toLowerCase();
+        const lowerClassName = cls.name.toLowerCase();
+        
+        // Count how many keywords match in method name, description, or class name
+        const matchedKeywords = rawKeywords.filter(keyword => 
+          lowerName.includes(keyword) || 
+          lowerDesc.includes(keyword) ||
+          lowerClassName.includes(keyword)
+        );
+
+        if (matchedKeywords.length > 0) {
+          scoredResults.push({
+            class: cls.name,
+            name: method.name,
+            method,
+            score: matchedKeywords.length
+          });
         }
       }
     }
+
+    // Sort by score (descending), then alphabetically for ties
+    scoredResults.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return `${a.class}.${a.name}`.localeCompare(`${b.class}.${b.name}`);
+    });
+
+    // Remove score fields before returning
+    const results = scoredResults.map(r => ({
+      class: r.class,
+      name: r.name,
+      method: r.method
+    }));
+
     return results;
   }
 }
