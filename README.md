@@ -18,8 +18,18 @@ python scripts/scrape_reascript.py /path/to/html/file
 ```
 
 ### Running the MCP server
+
+Setup first with 
+
 ```bash
-node reaper-dev-mcp/dist/index.js
+npm install
+npm run build
+```
+
+Then run it with 
+
+```bash
+npm run dev
 ```
 
 Or in `mcp.json`:
