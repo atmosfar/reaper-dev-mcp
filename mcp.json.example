@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "reaper-dev": {
-      "command": "node",
-      "args": ["/absolute/path/to/reaper-dev-mcp/dist/index.js"]
-    }
-  }
-}
-

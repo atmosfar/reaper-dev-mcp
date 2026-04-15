@@ -119,7 +119,7 @@ class ReaperDevMCPServer {
         tools: [
           {
             name: "get_function_info",
-            description: "Get detailed information about a function from JSFX, ReaScript, or ReaWrap API",
+            description: "Get detailed information about a specific function from JSFX, ReaScript, or ReaWrap API. For ReaScript API, optionally filter by language (c/eel2/lua/python)",
             inputSchema: {
               type: "object",
               properties: {
@@ -136,13 +136,18 @@ class ReaperDevMCPServer {
                   type: "string",
                   description: "Class name (required for ReaWrap)",
                 },
+                language: {
+                  type: "string",
+                  enum: ["c", "c++", "cpp", "eel", "eel2", "jsfx", "lua", "python", "py"],
+                  description: "Filter by language (optional)",
+                },
               },
               required: ["api", "function_name"],
             },
           },
           {
             name: "search_functions",
-            description: "Search for functions across JSFX, ReaScript, or ReaWrap APIs",
+            description: "Search for functions across JSFX, ReaScript, or ReaWrap APIs. For ReaScript API, optionally filter results by language (c/c++/eel2/lua/python). Use this tool to find a specific function name before calling `get_function_info`. A good strategy is to search for a single broad keyword first, eg 'Enum', 'Count', 'Track', 'Item', and then narrow the list down from there.",
             inputSchema: {
               type: "object",
               properties: {
@@ -160,6 +165,11 @@ class ReaperDevMCPServer {
                   description: "Maximum number of results (default: 10)",
                   default: 10,
                 },
+                language: {
+                  type: "string",
+                  enum: ["c", "c++", "cpp", "eel", "eel2", "jsfx", "lua", "python", "py"],
+                  description: "Filter by language (optional)",
+                },
               },
               required: ["api", "query"],
             },
@@ -175,11 +185,26 @@ class ReaperDevMCPServer {
       try {
         switch (name) {
           case "get_function_info": {
-            const { api, function_name, class_name } = args as {
+            // Normalize language helper
+            const normalizeLanguage = (lang: string): string => {
+              const map: Record<string, string> = {
+                "c++": "c",
+                "cpp": "c",
+                "eel": "eel2",
+                "jsfx": "eel2",
+                "py": "python",
+              };
+              return map[lang.toLowerCase()] || lang.toLowerCase();
+            };
+
+            const { api, function_name, class_name, language } = args as {
               api: string;
               function_name: string;
               class_name?: string;
+              language?: string;
             };
+            
+            const normalizedLang = language ? normalizeLanguage(language) : undefined;
 
             if (api === "jsfx") {
               const func = this.dataLoader.getJSFXFunction(function_name);
@@ -202,22 +227,42 @@ class ReaperDevMCPServer {
                 ],
               };
             } else if (api === "reascript") {
-              const func = this.dataLoader.getReaScriptFunction(function_name);
+              const func = this.dataLoader.getReaScriptFunction(function_name, normalizedLang);
               if (!func) {
                 return {
                   content: [
                     {
                       type: "text",
-                      text: `ReaScript function "${function_name}" not found.`,
+                      text: language
+                        ? `ReaScript function "${function_name}" not found for ${language} language.`
+                        : `ReaScript function "${function_name}" not found.`,
                     },
                   ],
                 };
               }
+              
+              // If language filter specified, return only that language's signature
+              let responseFunc = func;
+              if (normalizedLang) {
+                const langToKey: Record<string, "c" | "eel2" | "lua" | "python"> = {
+                  c: "c",
+                  eel2: "eel2",
+                  lua: "lua",
+                  python: "python",
+                };
+                const key = langToKey[normalizedLang];
+                responseFunc = {
+                  ...func,
+                  signatures: key ? { [key]: func.signatures[key] } : {},
+                  available_in: [normalizedLang as "c" | "eel2" | "lua" | "python"],
+                };
+              }
+              
               return {
                 content: [
                   {
                     type: "text",
-                    text: JSON.stringify(func, null, 2),
+                    text: JSON.stringify(responseFunc, null, 2),
                   },
                 ],
               };
@@ -257,45 +302,55 @@ class ReaperDevMCPServer {
           }
 
           case "search_functions": {
-            const { api, query, limit = 10 } = args as {
+            // Normalize language helper
+            const normalizeLanguage = (lang: string): string => {
+              const map: Record<string, string> = {
+                "c++": "c",
+                "cpp": "c",
+                "eel": "eel2",
+                "jsfx": "eel2",
+                "py": "python",
+              };
+              return map[lang.toLowerCase()] || lang.toLowerCase();
+            };
+
+            const { api, query, limit = 10, language } = args as {
               api: string;
               query: string;
               limit?: number;
+              language?: string;
             };
+            
+            const normalizedLang = language ? normalizeLanguage(language) : undefined;
+
+            // Search and return only function names (optimized for get_function_info lookup)
+            let results: any[];
 
             if (api === "jsfx") {
-              const results = this.dataLoader.searchJSFXFunctions(query).slice(0, limit);
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify(results, null, 2),
-                  },
-                ],
-              };
+              results = this.dataLoader.searchJSFXFunctions(query).slice(0, limit);
             } else if (api === "reascript") {
-              const results = this.dataLoader.searchReaScriptFunctions(query).slice(0, limit);
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify(results, null, 2),
-                  },
-                ],
-              };
+              results = this.dataLoader.searchReaScriptFunctions(query, normalizedLang).slice(0, limit);
             } else if (api === "reawrap") {
-              const results = this.dataLoader.searchReaWrapMethods(query).slice(0, limit);
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify(results, null, 2),
-                  },
-                ],
-              };
+              results = this.dataLoader.searchReaWrapMethods(query).slice(0, limit);
             } else {
               throw new Error(`Unhandled API: ${api}`);
             }
+
+            // Return only function names, not full details
+            const nameResults = results.map((r: any) => ({
+              name: r.name,
+              api: api,
+              class_name: api === "reawrap" ? (r as any).class : undefined,
+            }));
+
+            return {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify(nameResults, null, 2),
+                },
+              ],
+            };
           }
 
           default:
