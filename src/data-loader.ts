@@ -167,15 +167,24 @@ export class DataLoader {
       const lowerCat = (f.category || "").toLowerCase();
       
       // Count how many keywords match in name, description, or category
-      const matchedKeywords = rawKeywords.filter(keyword => 
-        lowerName.includes(keyword) || 
-        lowerDesc.includes(keyword) ||
-        lowerCat.includes(keyword)
-      );
+      // Use word boundary matching for short keywords (<4 chars) to avoid false positives
+      const matchedKeywords = rawKeywords.filter(keyword => {
+        if (keyword.length < 4) {
+          // For short keywords, require word boundary match
+          const wordRegex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+          return wordRegex.test(f.name) || wordRegex.test(f.description || '') || wordRegex.test(f.category || '');
+        }
+        return lowerName.includes(keyword) || lowerDesc.includes(keyword) || lowerCat.includes(keyword);
+      });
+
+      // Exact name match bonus (case-insensitive)
+      const exactMatchBonus = rawKeywords.filter(keyword => 
+        lowerName === keyword
+      ).length;
 
       return {
         func: f,
-        score: matchedKeywords.length
+        score: matchedKeywords.length + (exactMatchBonus * 100)
       };
     }).filter((r: { func: JSFXFunction; score: number }) => r.score > 0);
 
@@ -265,14 +274,24 @@ export class DataLoader {
       const lowerDesc = (f.description || "").toLowerCase();
       
       // Count how many keywords match this function in name or description
-      const matchedKeywords = rawKeywords.filter(keyword => 
-        lowerName.includes(keyword) || 
-        lowerDesc.includes(keyword)
-      );
+      // Use word boundary matching for short keywords (<4 chars) to avoid false positives
+      const matchedKeywords = rawKeywords.filter(keyword => {
+        if (keyword.length < 4) {
+          // For short keywords, require word boundary match
+          const wordRegex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+          return wordRegex.test(f.name) || wordRegex.test(f.description || '');
+        }
+        return lowerName.includes(keyword) || lowerDesc.includes(keyword);
+      });
+
+      // Exact name match bonus (case-insensitive)
+      const exactMatchBonus = rawKeywords.filter(keyword => 
+        lowerName === keyword
+      ).length;
 
       return {
         func: f,
-        score: matchedKeywords.length
+        score: matchedKeywords.length + (exactMatchBonus * 100)
       };
     }).filter((r: { func: ReaScriptFunction; score: number }) => r.score > 0); // Only include functions with at least one match
 
@@ -348,18 +367,27 @@ export class DataLoader {
         const lowerClassName = cls.name.toLowerCase();
         
         // Count how many keywords match in method name, description, or class name
-        const matchedKeywords = rawKeywords.filter(keyword => 
-          lowerName.includes(keyword) || 
-          lowerDesc.includes(keyword) ||
-          lowerClassName.includes(keyword)
-        );
+        // Use word boundary matching for short keywords (<4 chars) to avoid false positives
+        const matchedKeywords = rawKeywords.filter(keyword => {
+          if (keyword.length < 4) {
+            // For short keywords, require word boundary match
+            const wordRegex = new RegExp(`\\b${keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+            return wordRegex.test(method.name) || wordRegex.test(method.description || '') || wordRegex.test(cls.name);
+          }
+          return lowerName.includes(keyword) || lowerDesc.includes(keyword) || lowerClassName.includes(keyword);
+        });
+
+        // Exact name match bonus (case-insensitive)
+        const exactMatchBonus = rawKeywords.filter(keyword => 
+          lowerName === keyword || lowerClassName === keyword
+        ).length;
 
         if (matchedKeywords.length > 0) {
           scoredResults.push({
             class: cls.name,
             name: method.name,
             method,
-            score: matchedKeywords.length
+            score: matchedKeywords.length + (exactMatchBonus * 100)
           });
         }
       }
