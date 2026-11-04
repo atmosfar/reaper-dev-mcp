@@ -25,11 +25,6 @@ describe("MCP Server Data Validation", () => {
       expect(fs.existsSync(filePath)).toBe(true);
     });
 
-    it("should have ReaWrap API data file", () => {
-      const filePath = path.join(dataDir, "reawrap-api.json");
-      expect(fs.existsSync(filePath)).toBe(true);
-    });
-
     it("should have valid JSON in JSFX data file", () => {
       const filePath = path.join(dataDir, "jsfx-api.json");
       const content = fs.readFileSync(filePath, "utf-8");
@@ -46,13 +41,6 @@ describe("MCP Server Data Validation", () => {
       expect(data).toHaveProperty("scraped_at");
     });
 
-    it("should have valid JSON in ReaWrap data file", () => {
-      const filePath = path.join(dataDir, "reawrap-api.json");
-      const content = fs.readFileSync(filePath, "utf-8");
-      const data = JSON.parse(content);
-      expect(data).toHaveProperty("classes");
-      expect(data).toHaveProperty("scraped_at");
-    });
   });
 
   describe("JSFX Data Structure", () => {
@@ -104,35 +92,58 @@ describe("MCP Server Data Validation", () => {
     });
   });
 
-  describe("ReaWrap Data Structure", () => {
-    it("should have classes array", () => {
-      const loader = new DataLoader();
-      const data = loader.loadReaWrap();
-      expect(data?.classes).toBeDefined();
-      expect(Array.isArray(data?.classes)).toBe(true);
-      expect(data!.classes.length).toBeGreaterThan(0);
+  describe("Actions Data Structure", () => {
+    it("should have actions data file", () => {
+      const filePath = path.join(dataDir, "actions-api.json");
+      expect(fs.existsSync(filePath)).toBe(true);
     });
 
-    it("should have classes with methods", () => {
+    it("should have valid JSON in actions data file", () => {
+      const filePath = path.join(dataDir, "actions-api.json");
+      const data = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      expect(data).toHaveProperty("actions");
+      expect(data).toHaveProperty("sections");
+      expect(data).toHaveProperty("scraped_at");
+    });
+
+    it("should have actions with required fields", () => {
       const loader = new DataLoader();
-      const data = loader.loadReaWrap();
-      if (data?.classes && data.classes.length > 0) {
-        const cls = data.classes[0];
-        expect(cls).toHaveProperty("name");
-        expect(cls).toHaveProperty("methods");
-        expect(Array.isArray(cls.methods)).toBe(true);
+      const data = loader.loadActions();
+      if (data?.actions?.length) {
+        const action = data.actions[0];
+        expect(action).toHaveProperty("id");
+        expect(action).toHaveProperty("section");
+        expect(action).toHaveProperty("name");
+        expect(action).toHaveProperty("source");
+        expect(["reaper", "sws"]).toContain(action.source);
       }
     });
 
-    it("should have methods with required fields", () => {
+    it("should have sections with contexts", () => {
       const loader = new DataLoader();
-      const method = loader.getReaWrapMethod("track", "add_fx_by_name");
-      if (method) {
-        expect(method).toHaveProperty("name");
-        expect(method).toHaveProperty("class");
-        expect(method).toHaveProperty("signature");
+      const sections = loader.getActionSections();
+      expect(sections.length).toBeGreaterThan(0);
+      for (const section of sections) {
+        expect(typeof section.name).toBe("string");
+        expect(Array.isArray(section.contexts)).toBe(true);
+        expect(section.contexts.length).toBeGreaterThan(0);
       }
+    });
+
+    it("should count every action in counts_by_section", () => {
+      const loader = new DataLoader();
+      const data = loader.loadActions();
+      const sum = Object.values(data.counts_by_section).reduce((a: number, b: any) => a + b, 0);
+      expect(sum).toBe(data.total_actions);
+    });
+
+    it("should exclude per-install script actions from the dataset", () => {
+      const loader = new DataLoader();
+      const data = loader.loadActions();
+      const scripts = data.actions.filter((a: any) => /^Script: /i.test(a.name));
+      expect(scripts).toEqual([]);
     });
   });
+
 });
 

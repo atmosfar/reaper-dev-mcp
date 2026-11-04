@@ -1,7 +1,7 @@
 {
   "name": "reaper-dev-mcp",
   "version": "1.0.6",
-  "description": "MCP server providing reference documentation for REAPER development, ReaScript API, JSFX programming, and ReaWrap API",
+  "description": "MCP server providing reference documentation for REAPER development, ReaScript API and JSFX programming",
   "type": "module",
   "main": "dist/index.js",
   "bin": {
@@ -14,11 +14,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "test:integration": "tsx test-client.ts",
     "scrape": "python3.13 scripts/scrape_all.py",
     "scrape:jsfx": "python3.13 scripts/scrape_jsfx.py",
     "scrape:reascript": "python3.13 scripts/scrape_reascript.py",
-    "parse:reawrap": "python3.13 scripts/parse_reawrap.py"
+    "parse:actions": "python3 scripts/parse_actions.py"
   },
   "keywords": [
     "reaper",

@@ -6,57 +6,25 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import * as http from "http";
 import {
   CallToolRequestSchema,
-  ListResourcesRequestSchema,
   ListToolsRequestSchema,
-  ReadResourceRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import * as fs from "fs";
-import * as path from "path";
-import { fileURLToPath } from "url";
 import { DataLoader } from "./data-loader.js";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Resource URIs
-const RESOURCES = {
-  "jsfx-fundamentals": {
-    uri: "reascript://jsfx-fundamentals",
-    name: "JSFX Fundamentals",
-    description: "Core JSFX concepts: parameter indexing, slider visibility, @sections, memory management",
-    file: path.join(__dirname, "../docs/jsfx-fundamentals.md"),
-  },
-  "parameter-system": {
-    uri: "reascript://parameter-system",
-    name: "REAPER Parameter System",
-    description: "How REAPER's parameter system works: types, reading, setting, named config params",
-    file: path.join(__dirname, "../docs/parameter-system.md"),
-  },
-  "parameter-modulation": {
-    uri: "reascript://parameter-modulation",
-    name: "Parameter Modulation (plink API)",
-    description: "REAPER's parameter linking system: local vs global indices, creating/reading links",
-    file: path.join(__dirname, "../docs/parameter-modulation.md"),
-  },
-  "fx-containers": {
-    uri: "reascript://fx-containers",
-    name: "FX Container System",
-    description: "Working with container FX: pointers, GUIDs, parent/child navigation",
-    file: path.join(__dirname, "../docs/fx-containers.md"),
-  },
-  "reawrap-api": {
-    uri: "reascript://reawrap-api",
-    name: "ReaWrap API Reference",
-    description: "Reference documentation for ReaWrap's object-oriented API",
-    file: path.join(__dirname, "../docs/reawrap-api.md"),
-  },
-};
+import { TOOLS } from "./tool-definitions.js";
+import { ToolService, toMcpResult } from "./tool-handlers.js";
 
 class ReaperDevMCPServer {
   private server: Server;
-  private dataLoader: DataLoader;
+  private tools: ToolService;
 
   constructor() {
+    // Self-description for clients that surface server `instructions` in the
+    // model's prompt (pi falls back to these when the client config has no
+    // `description` of its own). The whole point is that the model can see a
+    // correct first call *before* it ever calls describeTool, so line one is
+    // the compact call signatures, not a marketing sentence. Keep it a single
+    // line: pi renders only the first line, truncated at 250 chars, and other
+    // clients charge whatever is here against the context of every request.
+    // The E2E suite fails if the first line grows past that budget.
     this.server = new Server(
       {
         name: "reaper-dev-mcp",
@@ -64,308 +32,42 @@ class ReaperDevMCPServer {
       },
       {
         capabilities: {
-          resources: {},
           tools: {},
         },
+        instructions:
+          "REAPER API. search_functions({api:'jsfx'|'reascript',query,limit?}) get_function_info({api,function_name,language?}) search_actions({query,section?,source?}),get_action({id,section}),get_actions_overview. Reply {ok,results,did_you_mean,retry}",
       }
     );
 
-    this.dataLoader = new DataLoader();
+    this.tools = new ToolService(new DataLoader());
     this.setupHandlers();
   }
 
   private setupHandlers() {
-    // List available resources
-    this.server.setRequestHandler(ListResourcesRequestSchema, async () => {
-      return {
-        resources: Object.values(RESOURCES).map((resource) => ({
-          uri: resource.uri,
-          name: resource.name,
-          description: resource.description,
-          mimeType: "text/markdown",
-        })),
-      };
-    });
-
-    // Read a resource
-    this.server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-      const uri = request.params.uri;
-      const resource = Object.values(RESOURCES).find((r) => r.uri === uri);
-
-      if (!resource) {
-        throw new Error(`Resource not found: ${uri}`);
-      }
-
-      if (!fs.existsSync(resource.file)) {
-        throw new Error(`Resource file not found: ${resource.file}`);
-      }
-
-      const content = fs.readFileSync(resource.file, "utf-8");
-
-      return {
-        contents: [
-          {
-            uri: resource.uri,
-            mimeType: "text/markdown",
-            text: content,
-          },
-        ],
-      };
-    });
-
-    // List available tools
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
-      return {
-        tools: [
-          {
-            name: "get_function_info",
-            description: "Get detailed information about a specific function from JSFX, ReaScript, or ReaWrap API. For ReaScript API, optionally filter by language (c/eel2/lua/python)",
-            inputSchema: {
-              type: "object",
-              properties: {
-                api: {
-                  type: "string",
-                  enum: ["jsfx", "reascript", "reawrap"],
-                  description: "Which API to query",
-                },
-                function_name: {
-                  type: "string",
-                  description: "Name of the function to look up",
-                },
-                class_name: {
-                  type: "string",
-                  description: "Class name (required for ReaWrap)",
-                },
-                language: {
-                  type: "string",
-                  enum: ["c", "c++", "cpp", "eel", "eel2", "jsfx", "lua", "python", "py"],
-                  description: "Filter by language (optional)",
-                },
-              },
-              required: ["api", "function_name"],
-            },
-          },
-          {
-            name: "search_functions",
-            description: "Search for functions across JSFX, ReaScript, or ReaWrap APIs. For ReaScript API, optionally filter results by language (c/c++/eel2/lua/python). Use this tool to find a specific function name before calling `get_function_info`. A good strategy is to search for a single broad keyword first, eg 'Enum', 'Count', 'Track', 'Item', and then narrow the list down from there.",
-            inputSchema: {
-              type: "object",
-              properties: {
-                api: {
-                  type: "string",
-                  enum: ["jsfx", "reascript", "reawrap"],
-                  description: "Which API to search",
-                },
-                query: {
-                  type: "string",
-                  description: "Search query (function name, description, etc.)",
-                },
-                limit: {
-                  type: "number",
-                  description: "Maximum number of results (default: 10)",
-                  default: 10,
-                },
-                language: {
-                  type: "string",
-                  enum: ["c", "c++", "cpp", "eel", "eel2", "jsfx", "lua", "python", "py"],
-                  description: "Filter by language (optional)",
-                },
-              },
-              required: ["api", "query"],
-            },
-          },
-        ],
-      };
+      return { tools: TOOLS };
     });
 
-    // Handle tool calls
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
-
       try {
-        switch (name) {
-          case "get_function_info": {
-            // Normalize language helper
-            const normalizeLanguage = (lang: string): string => {
-              const map: Record<string, string> = {
-                "c++": "c",
-                "cpp": "c",
-                "eel": "eel2",
-                "jsfx": "eel2",
-                "py": "python",
-              };
-              return map[lang.toLowerCase()] || lang.toLowerCase();
-            };
-
-            const { api, function_name, class_name, language } = args as {
-              api: string;
-              function_name: string;
-              class_name?: string;
-              language?: string;
-            };
-            
-            const normalizedLang = language ? normalizeLanguage(language) : undefined;
-
-            if (api === "jsfx") {
-              const func = this.dataLoader.getJSFXFunction(function_name);
-              if (!func) {
-                return {
-                  content: [
-                    {
-                      type: "text",
-                      text: `JSFX function "${function_name}" not found.`,
-                    },
-                  ],
-                };
-              }
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify(func, null, 2),
-                  },
-                ],
-              };
-            } else if (api === "reascript") {
-              const func = this.dataLoader.getReaScriptFunction(function_name, normalizedLang);
-              if (!func) {
-                return {
-                  content: [
-                    {
-                      type: "text",
-                      text: language
-                        ? `ReaScript function "${function_name}" not found for ${language} language.`
-                        : `ReaScript function "${function_name}" not found.`,
-                    },
-                  ],
-                };
-              }
-              
-              // If language filter specified, return only that language's signature
-              let responseFunc = func;
-              if (normalizedLang) {
-                const langToKey: Record<string, "c" | "eel2" | "lua" | "python"> = {
-                  c: "c",
-                  eel2: "eel2",
-                  lua: "lua",
-                  python: "python",
-                };
-                const key = langToKey[normalizedLang];
-                responseFunc = {
-                  ...func,
-                  signatures: key ? { [key]: func.signatures[key] } : {},
-                  available_in: [normalizedLang as "c" | "eel2" | "lua" | "python"],
-                };
-              }
-              
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify(responseFunc, null, 2),
-                  },
-                ],
-              };
-            } else if (api === "reawrap") {
-              if (!class_name) {
-                return {
-                  content: [
-                    {
-                      type: "text",
-                      text: "class_name is required for ReaWrap API queries.",
-                    },
-                  ],
-                };
-              }
-              const method = this.dataLoader.getReaWrapMethod(class_name, function_name);
-              if (!method) {
-                return {
-                  content: [
-                    {
-                      type: "text",
-                      text: `ReaWrap method "${class_name}.${function_name}" not found.`,
-                    },
-                  ],
-                };
-              }
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify(method, null, 2),
-                  },
-                ],
-              };
-            } else {
-              throw new Error(`Unhandled API: ${api}`);
-            }
-          }
-
-          case "search_functions": {
-            // Normalize language helper
-            const normalizeLanguage = (lang: string): string => {
-              const map: Record<string, string> = {
-                "c++": "c",
-                "cpp": "c",
-                "eel": "eel2",
-                "jsfx": "eel2",
-                "py": "python",
-              };
-              return map[lang.toLowerCase()] || lang.toLowerCase();
-            };
-
-            const { api, query, limit = 10, language } = args as {
-              api: string;
-              query: string;
-              limit?: number;
-              language?: string;
-            };
-            
-            const normalizedLang = language ? normalizeLanguage(language) : undefined;
-
-            // Search and return only function names (optimized for get_function_info lookup)
-            let results: any[];
-
-            if (api === "jsfx") {
-              results = this.dataLoader.searchJSFXFunctions(query).slice(0, limit);
-            } else if (api === "reascript") {
-              results = this.dataLoader.searchReaScriptFunctions(query, normalizedLang).slice(0, limit);
-            } else if (api === "reawrap") {
-              results = this.dataLoader.searchReaWrapMethods(query).slice(0, limit);
-            } else {
-              throw new Error(`Unhandled API: ${api}`);
-            }
-
-            // Return only function names, not full details
-            const nameResults = results.map((r: any) => ({
-              name: r.name,
-              api: api,
-              class_name: api === "reawrap" ? (r as any).class : undefined,
-            }));
-
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: JSON.stringify(nameResults, null, 2),
-                },
-              ],
-            };
-          }
-
-          default:
-            throw new Error(`Unknown tool: ${name}`);
-        }
+        return toMcpResult(this.tools.call(name, args));
       } catch (error: any) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: `Error: ${error.message}`,
-            },
-          ],
+        // Even an unexpected throw arrives as the standard envelope, so a caller
+        // never has to parse a bare message to work out what to do next.
+        return toMcpResult({
           isError: true,
-        };
+          envelope: {
+            ok: false,
+            results: [],
+            total: 0,
+            returned: 0,
+            truncated: false,
+            limit: null,
+            error: `Unexpected server error: ${error?.message ?? String(error)}`,
+            next_step: "Retry the same call once; if it repeats, report this message verbatim. The failed call changed nothing.",
+          },
+        });
       }
     });
   }

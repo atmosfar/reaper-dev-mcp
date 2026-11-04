@@ -60,42 +60,6 @@ export interface JSFXFunction {
   examples?: string[];
 }
 
-export interface ReaWrapMethod {
-  name: string;
-  class: string;
-  description: string;
-  signature: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    description?: string;
-    optional: boolean;
-  }>;
-  returns: Array<{
-    type: string;
-    description?: string;
-  }>;
-  category?: string;
-}
-
-export interface ReaWrapMethod {
-  name: string;
-  class: string;
-  description: string;
-  signature: string;
-  parameters: Array<{
-    name: string;
-    type: string;
-    description?: string;
-    optional: boolean;
-  }>;
-  returns: Array<{
-    type: string;
-    description?: string;
-  }>;
-  category?: string;
-}
-
 // Shared helper: match keywords against text fields with word boundary logic
 function matchKeywords(
   rawKeywords: string[],
@@ -138,10 +102,38 @@ function matchKeywords(
   return { matchedCount, exactBonus };
 }
 
+export interface Action {
+  id: string;
+  section: string;
+  name: string;
+  category: string | null;
+  source: "reaper" | "sws";
+}
+
+export interface ActionSection {
+  name: string;
+  contexts: string[];
+  action_count: number;
+  invoke: string | null;
+  notes: string | null;
+}
+
+export interface ActionDetail extends Action {
+  contexts: string[];
+  invoke: string | null;
+  notes: string | null;
+}
+
+export interface ActionSearchFilters {
+  section?: string;
+  category?: string;
+  source?: string;
+}
+
 export class DataLoader {
   private jsfxData: any = null;
   private reascriptData: any = null;
-  private reawrapData: any = null;
+  private actionsData: any = null;
 
   private dataDir = path.join(__dirname, "../data");
 
@@ -161,15 +153,6 @@ export class DataLoader {
       this.reascriptData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
     }
     return this.reascriptData;
-  }
-
-  loadReaWrap(): any {
-    if (this.reawrapData) return this.reawrapData;
-    const filePath = path.join(this.dataDir, "reawrap-api.json");
-    if (fs.existsSync(filePath)) {
-      this.reawrapData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    }
-    return this.reawrapData;
   }
 
   getJSFXFunction(name: string): JSFXFunction | null {
@@ -325,88 +308,160 @@ export class DataLoader {
     return results;
   }
 
-  getReaWrapMethod(className: string, methodName: string): any | null {
-    const data = this.loadReaWrap();
-    if (!data || !data.classes) return null;
-    
-    // Try exact match first, then case-insensitive
-    let cls = data.classes.find((c: any) => c.name === className);
-    if (!cls) {
-      cls = data.classes.find(
-        (c: any) => c.name.toLowerCase() === className.toLowerCase()
-      );
+  // ---------------------------------------------------------------------------
+  // REAPER actions (commands)
+  //
+  // Action IDs are only unique within a section, so every lookup keys on the
+  // pair (section, id). ID 41075 is "[developer] Debug console" in Main but
+  // "Set length for next inserted note: 1/4T" in the MIDI Editor.
+  // ---------------------------------------------------------------------------
+
+  loadActions(): any {
+    if (this.actionsData) return this.actionsData;
+    const filePath = path.join(this.dataDir, "actions-api.json");
+    if (fs.existsSync(filePath)) {
+      this.actionsData = JSON.parse(fs.readFileSync(filePath, "utf-8"));
     }
-    if (!cls) return null;
-    
-    // Try exact match first, then case-insensitive
-    let method = cls.methods.find((m: any) => m.name === methodName);
-    if (!method) {
-      method = cls.methods.find(
-        (m: any) => m.name.toLowerCase() === methodName.toLowerCase()
-      );
-    }
-    return method || null;
+    return this.actionsData;
   }
 
-  searchReaWrapMethods(query: string): Array<{ class: string; name: string; method: any }> {
-    const data = this.loadReaWrap();
-    if (!data || !data.classes) return [];
+  getActionSections(): ActionSection[] {
+    const data = this.loadActions();
+    return data && data.sections ? data.sections : [];
+  }
 
-    // Language aliases map for extracting from query (lua)
-    const LANGUAGE_ALIASES: Record<string, string[]> = { lua: ["lua"] };
+  // Resolve either a section name ("Main", "MIDI Editor") or one of the
+  // contexts listed under that section ("Main (alt-3)") to the canonical
+  // section name. Returns null when nothing matches.
+  resolveActionSection(name: string): string | null {
+    const target = name.trim().toLowerCase();
+    for (const section of this.getActionSections()) {
+      if (section.name.toLowerCase() === target) return section.name;
+      if (section.contexts.some((c: string) => c.toLowerCase() === target)) return section.name;
+    }
+    return null;
+  }
 
-    // Split query into keywords
-    const rawKeywords = query.toLowerCase().split(/\s+/).filter(k => k.length > 0);
+  private sectionMeta(name: string): ActionSection | undefined {
+    return this.getActionSections().find((s: ActionSection) => s.name === name);
+  }
 
-    // Extract language from keywords if present (ReaWrap is Lua-only)
-    let extractedLang: string | null = null;
-    for (const kw of rawKeywords) {
-      for (const [lang, aliases] of Object.entries(LANGUAGE_ALIASES)) {
-        if (aliases.includes(kw)) {
-          extractedLang = lang;
-          break;
-        }
+  // A category filter understands REAPER's own slash families, so "SWS" also
+  // matches "SWS/BR" and "Xenakios/SWS", while "Track" matches only "Track".
+  private categoryMatches(category: string | null, filter: string): boolean {
+    if (category === null) return false;
+    const c = category.toLowerCase();
+    const f = filter.trim().toLowerCase();
+    return c === f || c.startsWith(f + "/") || c.includes("/" + f);
+  }
+
+  getAction(id: string, section?: string): ActionDetail[] {
+    const data = this.loadActions();
+    if (!data || !data.actions) return [];
+
+    const wantedId = id.trim();
+    let matches = data.actions.filter((a: Action) => a.id === wantedId);
+
+    if (section) {
+      const resolved = this.resolveActionSection(section);
+      if (resolved) {
+        matches = matches.filter((a: Action) => a.section === resolved);
       }
-      if (extractedLang) break;
     }
 
-    // If no valid keywords, return empty
+    return matches.map((a: Action) => {
+      const meta = this.sectionMeta(a.section);
+      return {
+        ...a,
+        contexts: meta ? meta.contexts : [],
+        invoke: meta ? meta.invoke : null,
+        notes: meta ? meta.notes : null,
+      };
+    });
+  }
+
+  searchActions(query: string, filters: ActionSearchFilters = {}): Action[] {
+    const data = this.loadActions();
+    if (!data || !data.actions) return [];
+
+    const rawKeywords = query.toLowerCase().split(/\s+/).filter(k => k.length > 0);
     if (rawKeywords.length === 0) return [];
 
-    const scoredResults: Array<{ class: string; name: string; method: any; score: number }> = [];
-    for (const cls of data.classes) {
-      for (const method of cls.methods) {
-        const { matchedCount, exactBonus } = matchKeywords(rawKeywords, [
-          method.name,
-          method.description || '',
-          cls.name
-        ]);
+    // An explicit source parameter wins; otherwise a vendor word anywhere in
+    // the query narrows the search to that source (like language extraction in
+    // the API searches). The keyword itself is kept for text matching.
+    let sourceFilter = filters.source ? filters.source.trim().toLowerCase() : null;
+    if (!sourceFilter) {
+      if (rawKeywords.some(k => k === "sws" || k === "xenakios")) sourceFilter = "sws";
+      else if (rawKeywords.some(k => k === "reaper" || k === "stock")) sourceFilter = "reaper";
+    }
+    if (sourceFilter === "all" || sourceFilter === "any") sourceFilter = null;
+    if (sourceFilter === "stock") sourceFilter = "reaper";
 
-        if (matchedCount > 0) {
-          scoredResults.push({
-            class: cls.name,
-            name: method.name,
-            method,
-            score: matchedCount + (exactBonus * 100)
-          });
-        }
+    const sectionFilter = filters.section ? this.resolveActionSection(filters.section) : null;
+    const categoryFilter = filters.category || null;
+
+    const scoredResults: Array<{ action: Action; score: number; matchedCount: number }> = [];
+    for (const action of data.actions as Action[]) {
+      if (sourceFilter && action.source !== sourceFilter) continue;
+      if (sectionFilter && action.section !== sectionFilter) continue;
+      if (categoryFilter && !this.categoryMatches(action.category, categoryFilter)) continue;
+
+      const { matchedCount, exactBonus } = matchKeywords(rawKeywords, [
+        action.name,
+        action.category || "",
+        action.id
+      ]);
+
+      if (matchedCount > 0) {
+        scoredResults.push({
+          action,
+          matchedCount,
+          score: matchedCount + (exactBonus * 100)
+        });
       }
     }
 
-    // Sort by score (descending), then alphabetically for ties
-    scoredResults.sort((a, b) => {
+    // Action names are natural-language sentences, so prefer results matching
+    // every keyword (an implicit AND). If nothing matches all of them -- one
+    // keyword being a typo, for instance -- fall back to partial matches rather
+    // than returning nothing, since score order still puts closest hits first.
+    const fullMatches = scoredResults.filter(r => r.matchedCount === rawKeywords.length);
+    const candidates = fullMatches.length > 0 ? fullMatches : scoredResults;
+
+    candidates.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
-      return `${a.class}.${a.name}`.localeCompare(`${b.class}.${b.name}`);
+      const bySection = a.action.section.localeCompare(b.action.section);
+      if (bySection !== 0) return bySection;
+      return a.action.name.localeCompare(b.action.name);
     });
 
-    // Remove score fields before returning
-    const results = scoredResults.map(r => ({
-      class: r.class,
-      name: r.name,
-      method: r.method
-    }));
+    return candidates.map(r => r.action);
+  }
 
-    return results;
+  getActionsOverview(): any {
+    const data = this.loadActions();
+    if (!data || !data.actions) return null;
+
+    const categories: Record<string, number> = {};
+    for (const action of data.actions as Action[]) {
+      const key = action.category || "(no category)";
+      categories[key] = (categories[key] || 0) + 1;
+    }
+
+    return {
+      generated_by: data.generated_by,
+      total_actions: data.total_actions,
+      counts_by_source: data.counts_by_source,
+      sections: data.sections,
+      categories,
+      important_caveats: [
+        "Command IDs are unique only within a section - always disambiguate with the section. The same numeric ID refers to different actions in different sections.",
+        "Sourced from an actions-list export of one specific REAPER install and its installed extensions, so IDs and coverage can differ between versions and installs.",
+        "SWS actions are registered by an extension; call them via NamedCommandLookup('_NAME') rather than hardcoding the numeric ID where possible. ReverseNamedCommandLookup maps an ID back to that name.",
+        "Non-SWS third party actions (Helgobox, ReaPack) and the per-install ReaScript actions (named 'Script: something.lua') were excluded from this dataset."
+      ]
+    };
   }
 }
 

@@ -12,7 +12,6 @@ SCRIPTS_DIR = Path(__file__).parent
 SCRIPTERS = [
     ("JSFX", "scrape_jsfx.py"),
     ("ReaScript", "scrape_reascript.py"),
-    ("ReaWrap", "parse_reawrap.py"),
 ]
 
 def main():

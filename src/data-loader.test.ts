@@ -65,43 +65,107 @@ describe("DataLoader", () => {
     });
   });
 
-  describe("ReaWrap Methods", () => {
-    it("should load ReaWrap data", () => {
-      const data = loader.loadReaWrap();
+  describe("REAPER Actions", () => {
+    it("should load actions data", () => {
+      const data = loader.loadActions();
       expect(data).toBeDefined();
-      expect(data?.classes).toBeDefined();
-      expect(Array.isArray(data?.classes)).toBe(true);
+      expect(Array.isArray(data?.actions)).toBe(true);
+      expect(Array.isArray(data?.sections)).toBe(true);
+      expect(data!.actions.length).toBeGreaterThan(0);
     });
 
-    it("should find ReaWrap method by class and method name", () => {
-      const method = loader.getReaWrapMethod("track", "add_fx_by_name");
-      expect(method).toBeDefined();
-      expect(method?.name).toBe("add_fx_by_name");
-      expect(method?.class).toBe("Track");
+    it("should find an action by id", () => {
+      const matches = loader.getAction("40064");
+      expect(matches.length).toBeGreaterThan(0);
+      expect(matches.map((a) => a.name)).toContain(
+        "Envelope: Insert new point at current position to all visible track envelopes (do not remove nearby points)"
+      );
     });
 
-    it("should handle case-insensitive class lookup", () => {
-      const method = loader.getReaWrapMethod("Track", "add_fx_by_name");
-      expect(method).toBeDefined();
+    it("should return one row per section sharing an id", () => {
+      // 41075 is the same numeric id for two unrelated actions.
+      const matches = loader.getAction("41075");
+      expect(matches.length).toBeGreaterThan(1);
+      const sections = matches.map((a) => a.section);
+      expect(new Set(sections).size).toBe(sections.length);
+      const names = matches.map((a) => a.name);
+      expect(new Set(names).size).toBe(names.length);
     });
 
-    it("should return null for non-existent class", () => {
-      const method = loader.getReaWrapMethod("NonexistentClass", "method");
-      expect(method).toBeNull();
+    it("should narrow to a single section when one is given", () => {
+      const matches = loader.getAction("41075", "MIDI Editor");
+      expect(matches.length).toBe(1);
+      expect(matches[0].name).toContain("Set length for next inserted note");
     });
 
-    it("should return null for non-existent method", () => {
-      const method = loader.getReaWrapMethod("track", "nonexistent_method");
-      expect(method).toBeNull();
+    it("should return no rows for an unknown id", () => {
+      expect(loader.getAction("99999999")).toEqual([]);
     });
 
-    it("should search ReaWrap methods", () => {
-      const results = loader.searchReaWrapMethods("create");
+    it("should enrich results with section invoke metadata", () => {
+      const match = loader.getAction("41075", "Main")[0];
+      expect(match.invoke).toContain("Main_OnCommand");
+      expect(Array.isArray(match.contexts)).toBe(true);
+      expect(match.contexts).toContain("Main");
+    });
+
+    it("should resolve section contexts to their canonical section", () => {
+      expect(loader.resolveActionSection("Main (alt-3)")).toBe("Main");
+      expect(loader.resolveActionSection("midi editor")).toBe("MIDI Editor");
+      expect(loader.resolveActionSection("Not A Section")).toBeNull();
+    });
+
+    it("should search actions by name", () => {
+      const results = loader.searchActions("envelope insert point");
       expect(results.length).toBeGreaterThan(0);
-      expect(results[0]).toHaveProperty("class");
-      expect(results[0]).toHaveProperty("name");
-      expect(results[0]).toHaveProperty("method");
+      expect(results.some((a) => /envelope/i.test(a.name))).toBe(true);
+    });
+
+    it("should prefer results matching every keyword", () => {
+      const query = "insert new point at current position";
+      const keywords = query.split(/\s+/);
+      const results = loader.searchActions(query);
+      expect(results.length).toBeGreaterThan(0);
+      for (const action of results) {
+        for (const kw of keywords) {
+          expect(action.name.toLowerCase()).toContain(kw);
+        }
+      }
+    });
+
+    it("should treat a vendor word in the query as a source filter", () => {
+      const results = loader.searchActions("marker sws");
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.every((a) => a.source === "sws")).toBe(true);
+    });
+
+    it("should filter by section", () => {
+      const results = loader.searchActions("insert", { section: "MIDI Editor" });
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.every((a) => a.section === "MIDI Editor")).toBe(true);
+    });
+
+    it("should match REAPER slash category families", () => {
+      const results = loader.searchActions("toolbar", { category: "SWS" });
+      expect(results.length).toBeGreaterThan(0);
+      expect(results.some((a) => a.category?.startsWith("SWS/"))).toBe(true);
+    });
+
+    it("should exclude per-install ReaScript actions", () => {
+      for (const action of loader.searchActions("script")) {
+        expect(action.name).not.toMatch(/^Script: /i);
+      }
+    });
+
+    it("should summarize the dataset in the overview", () => {
+      const overview = loader.getActionsOverview();
+      expect(overview).toBeDefined();
+      expect(overview.total_actions).toBeGreaterThan(0);
+      expect(overview.counts_by_source).toHaveProperty("reaper");
+      expect(overview.counts_by_source).toHaveProperty("sws");
+      expect(overview.important_caveats.length).toBeGreaterThan(0);
     });
   });
+
 });
 
