@@ -23,7 +23,7 @@ def main():
         script_path = SCRIPTS_DIR / script
         try:
             result = subprocess.run(
-                ["python3.13", str(script_path)],
+                ["python3", str(script_path)],
                 capture_output=True,
                 text=True,
             )
