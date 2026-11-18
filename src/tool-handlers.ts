@@ -237,6 +237,22 @@ export class ToolService {
     return this.sections().join(", ");
   }
 
+  /**
+   * A dataset that cannot be read at all is a broken install, not an empty API —
+   * and answering it with "no reascript function matches 'track'" is the same
+   * sentence a genuine miss produces, which sends the caller off deciding REAPER
+   * has no such function. Name the file and say how to rebuild it. Cheap to ask on
+   * every call: DataLoader caches what it parses, so once a dataset is loaded this
+   * is a property read, and while one is missing it is a single existsSync.
+   */
+  private missingDataset(api: "jsfx" | "reascript"): string | null {
+    const data = api === "reascript" ? this.loader.loadReaScript() : this.loader.loadJSFX();
+    if (data && Array.isArray(data.functions) && data.functions.length > 0) return null;
+    return api === "reascript"
+      ? "The ReaScript dataset is not installed: data/reascript-api.json is missing or unreadable. Restore it with: git checkout -- data/reascript-api.json, or rebuild it with python3 scripts/scrape_reascript.py (README ▸ Updating the function definitions). The actions and JSFX datasets are unaffected."
+      : "The JSFX dataset is not installed: data/jsfx-api.json could not be read. Regenerate it with: npm run scrape:jsfx";
+  }
+
   private failureFromArgs(
     outcome: Extract<ArgOutcome, { ok: false }>,
     tool: string
@@ -313,6 +329,21 @@ export class ToolService {
           "search_actions",
           { query: function_name },
           `to find the action; get_action ${json({ id: function_name, section: "Main" })} then returns how to invoke it`
+        ),
+        notes,
+      });
+    }
+
+    const absent = this.missingDataset(api);
+    if (absent) {
+      return miss({
+        ok: false,
+        results: [],
+        error: absent,
+        ...step(
+          "get_actions_overview",
+          {},
+          "the actions dataset is installed and takes no arguments; the ReaScript one is built by the scrape named above"
         ),
         notes,
       });
@@ -453,6 +484,8 @@ export class ToolService {
       notes.push("JSFX built-ins are Eel2 only, so the language filter had no effect.");
     }
 
+    const absent = this.missingDataset(api);
+
     if (isNumeric(query)) {
       return miss({
         ok: false,
@@ -462,6 +495,23 @@ export class ToolService {
         error: `'${query}' looks like a REAPER command ID. Command IDs are actions and live in a different dataset from API functions.`,
         also_found_in: { tool: "search_actions", query },
         ...step("search_actions", { query }, "command ids live in the actions dataset"),
+        notes,
+      });
+    }
+
+    if (absent) {
+      return miss({
+        ok: false,
+        results: [],
+        total: 0,
+        limit,
+        query: { api, query, limit },
+        error: absent,
+        ...step(
+          "get_actions_overview",
+          {},
+          "the actions dataset is installed and takes no arguments; the ReaScript one is built by the scrape named above"
+        ),
         notes,
       });
     }

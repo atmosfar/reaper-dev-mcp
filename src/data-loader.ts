@@ -1,6 +1,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { fileURLToPath } from "url";
+import { compactForm, similarity, stem, tokenize } from "./suggest.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -102,6 +103,57 @@ function matchKeywords(
   return { matchedCount, exactBonus };
 }
 
+/**
+ * Does every keyword appear in this name, reading it as an identifier?
+ *
+ * The main matcher requires word boundaries for keywords under four characters,
+ * which is right for prose and wrong for names: 'fx' in TrackFX_GetParam has no
+ * boundary before it, so the word the caller typed never counted as a name hit
+ * at all. Names are compared as tokens instead — the same camelCase/snake_case
+ * split 'did you mean' uses, with the same plural stemming — so track, fx and
+ * param are all recognised in TrackFX_GetParam.
+ */
+function keywordsInName(rawKeywords: string[], name: string): boolean {
+  const tokens = tokenize(name);
+  if (tokens.length === 0) return false;
+  return rawKeywords.every((keyword) => {
+    // Stemmed for the same reason the tokens are: 'tracks' has to reach 'track'.
+    const needle = stem(compactForm(keyword));
+    // One-letter keywords sit inside almost every name; they earn nothing.
+    return needle.length >= 2 && tokens.some((token) => token.includes(needle));
+  });
+}
+
+/**
+ * Name tier — the tie-break the keyword score cannot express.
+ *
+ * A score of "how many keywords matched somewhere" cannot tell a function whose
+ * NAME carries every word from one that merely mentions them in its prose, so
+ * those results tie and fall to alphabetical order. That is how 'count tracks'
+ * returned BR_GetMediaTrackSendInfo_Envelope (whose description says "…to count
+ * track sends…") ahead of CountTracks, and 'track fx param' left TrackFX_GetParam
+ * out of the first page entirely.
+ *
+ * Three tiers, deliberately coarse — they order classes of hit, not individuals:
+ *   1000  the caller typed the name itself, separators aside
+ *    500  the name starts with everything they typed
+ *    200  every keyword is in the name, not just in its description
+ *
+ * 'count tracks' compacts to the name CountTracks (1000); CountSelectedTracks and
+ * TrackFX_GetParam earn 200 because every word is in their name; the BR_ accessor
+ * gets nothing, because "count" only appears in its description.
+ */
+export function nameTier(rawKeywords: string[], name: string): number {
+  if (!name || rawKeywords.length === 0) return 0;
+  const compactQuery = compactForm(rawKeywords.join(""));
+  if (compactQuery) {
+    const compactName = compactForm(name);
+    if (compactName === compactQuery) return 1000;
+    if (compactName.startsWith(compactQuery)) return 500;
+  }
+  return keywordsInName(rawKeywords, name) ? 200 : 0;
+}
+
 export interface Action {
   id: string;
   section: string;
@@ -186,7 +238,7 @@ export class DataLoader {
     // If no valid keywords, return empty
     if (rawKeywords.length === 0) return [];
 
-    const scoredResults: Array<{ func: JSFXFunction; score: number }> = data.functions.map((f: JSFXFunction) => {
+    const scoredResults: Array<{ func: JSFXFunction; score: number; sim: number }> = data.functions.map((f: JSFXFunction) => {
       const { matchedCount, exactBonus } = matchKeywords(rawKeywords, [
         f.name,
         f.description || '',
@@ -195,13 +247,19 @@ export class DataLoader {
 
       return {
         func: f,
-        score: matchedCount + (exactBonus * 100)
+        matchedCount,
+        score: matchedCount + (exactBonus * 100) + nameTier(rawKeywords, f.name),
+        sim: similarity(query, f.name)
       };
-    }).filter((r: { func: JSFXFunction; score: number }) => r.score > 0);
+    }).filter((r: { func: JSFXFunction; matchedCount: number }) => r.matchedCount > 0); // a tier ranks; it does not match
 
-    // Sort by score (descending), then alphabetically for ties
+    // Sort by score, then by how close the name is to what was typed, then A-Z.
+    // That middle key is what keeps TrackFX_GetParam above TrackFX_EndParamEdit
+    // when both land in the same tier, instead of leaving it to spelling luck.
     scoredResults.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
+      const simGap = Math.round(b.sim * 100) - Math.round(a.sim * 100);
+      if (simGap !== 0) return simGap;
       return a.func.name.localeCompare(b.func.name);
     });
 
@@ -280,7 +338,7 @@ export class DataLoader {
     // If no valid keywords, return empty
     if (rawKeywords.length === 0) return [];
 
-    const scoredResults: Array<{ func: ReaScriptFunction; score: number }> = data.functions.map((f: ReaScriptFunction) => {
+    const scoredResults: Array<{ func: ReaScriptFunction; score: number; sim: number }> = data.functions.map((f: ReaScriptFunction) => {
       const { matchedCount, exactBonus } = matchKeywords(rawKeywords, [
         f.name,
         f.description || ''
@@ -288,13 +346,18 @@ export class DataLoader {
 
       return {
         func: f,
-        score: matchedCount + (exactBonus * 100)
+        matchedCount,
+        score: matchedCount + (exactBonus * 100) + nameTier(rawKeywords, f.name),
+        sim: similarity(query, f.name)
       };
-    }).filter((r: { func: ReaScriptFunction; score: number }) => r.score > 0); // Only include functions with at least one match
+    }).filter((r: { func: ReaScriptFunction; matchedCount: number }) => r.matchedCount > 0); // Only include functions with at least one match — a tier ranks, it does not match
 
-    // Sort by score (descending), then alphabetically for ties
+    // Score, then closeness of the name to the query, then A-Z. See the JSFX
+    // search above for why alphabetical alone is a poor final tie-break.
     scoredResults.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
+      const simGap = Math.round(b.sim * 100) - Math.round(a.sim * 100);
+      if (simGap !== 0) return simGap;
       return a.func.name.localeCompare(b.func.name);
     });
 
@@ -401,7 +464,7 @@ export class DataLoader {
     const sectionFilter = filters.section ? this.resolveActionSection(filters.section) : null;
     const categoryFilter = filters.category || null;
 
-    const scoredResults: Array<{ action: Action; score: number; matchedCount: number }> = [];
+    const scoredResults: Array<{ action: Action; score: number; matchedCount: number; sim: number }> = [];
     for (const action of data.actions as Action[]) {
       if (sourceFilter && action.source !== sourceFilter) continue;
       if (sectionFilter && action.section !== sectionFilter) continue;
@@ -417,7 +480,8 @@ export class DataLoader {
         scoredResults.push({
           action,
           matchedCount,
-          score: matchedCount + (exactBonus * 100)
+          score: matchedCount + (exactBonus * 100) + nameTier(rawKeywords, action.name),
+          sim: similarity(query, action.name)
         });
       }
     }
@@ -431,6 +495,8 @@ export class DataLoader {
 
     candidates.sort((a, b) => {
       if (b.score !== a.score) return b.score - a.score;
+      const simGap = Math.round(b.sim * 100) - Math.round(a.sim * 100);
+      if (simGap !== 0) return simGap;
       const bySection = a.action.section.localeCompare(b.action.section);
       if (bySection !== 0) return bySection;
       return a.action.name.localeCompare(b.action.name);

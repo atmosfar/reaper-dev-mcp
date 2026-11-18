@@ -1,0 +1,1919 @@
+<!DOCTYPE html>
+<!--
+  REAPER reference lookup — one file, no build, no dependencies.
+
+  Searches the same JSON datasets the MCP server reads (data/reascript-api.json,
+  data/actions-api.json, data/jsfx-api.json) with the same ranking the server
+  applies, so a result list here is the result list an agent gets from
+  search_functions / search_actions.
+
+  Two ways to use it, whichever you have to hand:
+
+  1. Open this file directly. The browser cannot read data/ from a file:// page,
+     so drop the three files from the repo's data/ folder onto the page once.
+     They are deflated and kept in localStorage, and every later visit loads
+     itself from there. Nothing else on disk is touched.
+
+  2. Serve the repository and it reads data/ by itself, always the latest scrape:
+
+        python3 -m http.server 8080
+        open http://localhost:8080/webpage/
+
+  Whichever way the data arrived, the search behaves the same.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>REAPER reference — functions &amp; actions</title>
+<style>
+  :root {
+    --bg: #15171b;
+    --panel: #1b1e24;
+    --panel-2: #20242c;
+    --line: #2c313b;
+    --text: #d7dde8;
+    --muted: #8a93a5;
+    --dim: #626b7d;
+    --accent: #58a6dd;
+    --amber: #e0a33e;
+    --green: #67c98a;
+    --red: #e06c6c;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  button, input, select { font: inherit; color: inherit; }
+  a { color: var(--accent); }
+  .app { display: grid; grid-template-rows: auto 1fr auto; height: 100%; }
+
+  /* header */
+  header {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding: 12px 16px 8px;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  .tabs { display: flex; gap: 6px; margin-left: auto; }
+  .tabs button {
+    background: transparent; border: 1px solid var(--line); border-radius: 999px;
+    padding: 4px 12px; cursor: pointer; color: var(--muted); font-size: 13px;
+  }
+  .tabs button.on { background: var(--panel-2); color: var(--text); border-color: #3d4552; }
+  .tabs button small { color: var(--dim); margin-left: 5px; font-family: var(--mono); }
+
+  /* toolbar — lives inside the results column, so it is exactly as wide as it */
+  .toolbar { padding: 8px 12px 7px; display: grid; gap: 7px; border-top: 1px solid var(--line); }
+  .searchline { display: flex; gap: 8px; align-items: center; position: relative; }
+  .mag { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--dim); pointer-events: none; }
+  #q {
+    flex: 1; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 9px 12px 9px 33px; outline: none; font-size: 15px;
+  }
+  #q:focus { border-color: #3f5164; box-shadow: 0 0 0 3px rgba(88,166,221,.10); }
+  .filters { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .filters label { color: var(--dim); font-size: 12px; }
+  .filters select {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    padding: 4px 7px; font-size: 12.5px; outline: none;
+  }
+  .filters .ghost {
+    background: none; border: none; color: var(--dim); cursor: pointer; font-size: 12px;
+    padding: 4px 6px;
+  }
+  .filters .ghost:hover { color: var(--text); }
+  /* one line: how many, how many shown, and anything that qualifies that */
+  .echo { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-size: 11.5px; color: var(--dim); min-height: 15px; }
+  .echo .count { font-family: var(--mono); color: var(--muted); }
+  .echo .count b { color: var(--amber); font-weight: 500; }
+  .echo .note { font-style: italic; }
+  .echo button { background: none; border: none; color: var(--accent); cursor: pointer; font-size: 11.5px; padding: 0; }
+
+  /* main */
+  .main { display: grid; grid-template-columns: minmax(340px, 42%) 1fr; min-height: 0; }
+  .left { display: grid; grid-template-rows: auto 1fr; min-height: 0; }
+  .listwrap { border-top: 1px solid var(--line); overflow-y: auto; min-height: 0; }
+  .detail { border-left: 1px solid var(--line); overflow-y: auto; padding: 16px 18px 60px; min-height: 0; }
+
+  /* rows */
+  .row {
+    padding: 7px 16px; border-bottom: 1px solid #1e2229; cursor: pointer;
+    display: grid; gap: 2px;
+  }
+  .row:hover { background: var(--panel); }
+  .row.sel { background: var(--panel-2); box-shadow: inset 3px 0 0 var(--accent); }
+  .row .t { display: flex; gap: 8px; align-items: baseline; }
+  .row .name { font-family: var(--mono); font-size: 13px; color: var(--text); }
+  .row .name.sentence { font-family: inherit; font-size: 13.5px; }
+  .row .id { font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin-left: auto; white-space: nowrap; }
+  .row .s { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  mark { background: rgba(224,163,62,.28); color: #f2d9a8; border-radius: 2px; padding: 0 1px; }
+
+  .badge {
+    font: 10.5px/1.4 var(--mono); text-transform: uppercase; letter-spacing: .04em;
+    border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--muted);
+    white-space: nowrap;
+  }
+  .badge.sws { color: #c99ad6; border-color: #43354a; }
+  .badge.reaper { color: #86b9d8; border-color: #2e3d49; }
+  .badge.sec { color: #7fb08e; border-color: #2e4136; text-transform: none; letter-spacing: 0; }
+  .badge.lang { color: var(--dim); }
+  .badge.lang.on { color: var(--amber); border-color: #4a3f2a; }
+
+  /* detail */
+  .detail h2 { font-size: 17px; margin: 0 0 2px; font-family: var(--mono); word-break: break-word; }
+  .detail h2.sentence { font-family: inherit; font-size: 16px; }
+  .metarow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin: 6px 0 14px; }
+  .sect-h {
+    font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim);
+    margin: 18px 0 6px; border-bottom: 1px solid var(--line); padding-bottom: 3px;
+  }
+  .sig {
+    font-family: var(--mono); font-size: 12.5px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-word; position: relative;
+  }
+  .sig .rt { color: var(--green); }
+  .sig .fn { color: var(--accent); }
+  .sig .ty { color: #c99ad6; }
+  .sig .pn { color: var(--text); }
+  .sig .opt { color: var(--dim); }
+  .langtag { font: 11px var(--mono); color: var(--dim); margin: 10px 0 3px; }
+  /* copy affordance: invisible until you hover the codebox it belongs to */
+  .copy {
+    position: absolute; right: 7px; top: 50%; transform: translateY(-50%);
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px;
+    color: var(--muted); font-size: 13px; line-height: 1; padding: 3px 5px; cursor: pointer;
+    opacity: 0; transition: opacity .1s;
+  }
+  .sig:hover .copy { opacity: 1; }
+  .copy:hover { color: var(--text); border-color: #3f5164; }
+  table.params { border-collapse: collapse; width: 100%; font-family: var(--mono); font-size: 12px; }
+  table.params td { padding: 3px 10px 3px 0; border-bottom: 1px solid #1e2229; vertical-align: top; }
+  table.params td.t { color: #c99ad6; white-space: nowrap; }
+  table.params td.n { color: var(--accent); white-space: nowrap; }
+  /* Parameters, per binding. A table spreads its slack over every column, which
+     pushed the name a full tab away from its type; a grid with two max-content
+     columns keeps "ReaProject* proj" together and gives the remainder to prose. */
+  .plist {
+    display: grid; grid-template-columns: max-content max-content 1fr; column-gap: 9px;
+    row-gap: 1px; font-family: var(--mono); font-size: 12px; margin: 5px 0 2px;
+  }
+  .plist .t { color: #c99ad6; }
+  .plist .n { color: var(--accent); }
+  .plist .pd { color: var(--muted); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .plist .pd:empty::before { content: ""; }
+  .desc { color: var(--text); font-size: 13.5px; white-space: pre-wrap; }
+  .desc.empty { color: var(--dim); font-style: italic; }
+  .hint { font-size: 12px; color: var(--muted); }
+  .warn {
+    border-left: 3px solid var(--amber); background: rgba(224,163,62,.07);
+    padding: 7px 10px; border-radius: 0 6px 6px 0; font-size: 12.5px; color: #e6cfa0;
+  }
+  .linkbtn {
+    background: none; border: none; color: var(--accent); cursor: pointer; padding: 0;
+    font: inherit; text-decoration: underline; font-size: inherit;
+  }
+
+  /* states */
+  .state { padding: 26px 18px; color: var(--muted); display: grid; gap: 10px; }
+  .state h3 { color: var(--text); margin: 0; font-size: 15px; }
+  .state code { font-family: var(--mono); background: var(--panel); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+  .ym { display: flex; gap: 6px; flex-wrap: wrap; }
+  .ym button {
+    font-family: var(--mono); font-size: 12px; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 999px; padding: 3px 10px; cursor: pointer; color: var(--text);
+  }
+  .ym button:hover { border-color: var(--accent); color: var(--accent); }
+  .more { width: 100%; background: var(--panel); border: none; border-top: 1px solid var(--line); color: var(--muted); padding: 8px; cursor: pointer; font-size: 12px; }
+  .more:hover { color: var(--text); background: var(--panel-2); }
+
+  footer {
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+    padding: 6px 16px; font-size: 11.5px; color: var(--dim); font-family: var(--mono);
+  }
+  footer button { background: none; border: none; color: var(--dim); cursor: pointer; font-size: 11.5px; text-decoration: underline; }
+  .kbd { font-family: var(--mono); border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 3px; padding: 0 4px; color: var(--muted); }
+  .files { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .files label.fbtn {
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px;
+    cursor: pointer; font-size: 12.5px; color: var(--text);
+  }
+  #filein { display: none; }
+  .drop { position: fixed; inset: 0; background: rgba(88,166,221,.10); border: 2px dashed var(--accent); pointer-events: none; z-index: 9; display: none; }
+  .app.drag .drop { display: block; }
+  @media (max-width: 900px) {
+    .main { grid-template-columns: 1fr; }
+    .detail { border-left: none; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<div class="app" id="app">
+  <div class="drop"></div>
+  <header>
+    <h1>REAPER reference</h1>
+    <nav class="tabs" id="tabs"></nav>
+  </header>
+
+  <div class="main">
+    <div class="left">
+      <div class="toolbar">
+        <div class="searchline">
+          <svg class="mag" width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+            <circle cx="6.6" cy="6.6" r="4.4" fill="none" stroke="currentColor" stroke-width="1.7"/>
+            <path d="M9.9 9.9 13.6 13.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          </svg>
+          <input id="q" type="search" aria-label="Search" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="filters" id="filters"></div>
+        <div class="echo" id="echo"></div>
+      </div>
+      <div class="listwrap" id="list"></div>
+    </div>
+    <div class="detail" id="detail"></div>
+  </div>
+
+  <footer>
+    <span><span class="kbd">/</span> search <span class="kbd">↑↓</span> move <span class="kbd">↵</span> open <span class="kbd">esc</span> clear</span>
+    <span id="about"></span>
+    <button id="storagebtn" type="button" style="display:none">clear saved files</button>
+    <button id="aboutbtn" type="button">about / caveats</button>
+  </footer>
+</div>
+
+<script>
+"use strict";
+/* ============================================================================
+   Part 1 — matching engine.
+   Ported from src/suggest.ts and src/data-loader.ts. Ranking, tie-breaks and
+   filter semantics are deliberately kept identical to the MCP server: the point
+   of this page is that it answers like the tool does.
+   ========================================================================== */
+
+/** Case- and separator-free form: the key that makes 'TrackFX-GetParam' resolve. */
+function compactForm(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** Cheap English-ish stem: items -> item, takes -> take, but leaves "fx" alone. */
+function stem(token) {
+  if (token.endsWith("ies") && token.length > 4) return token.slice(0, -3) + "y";
+  if (token.endsWith("s") && !token.endsWith("ss") && token.length > 3) return token.slice(0, -1);
+  return token;
+}
+
+/** TrackFX_GetParam -> track, fx, get, param */
+function tokenize(name) {
+  return name
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/([A-Z]+)([A-Z][a-z])/g, "$1 $2")
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 1)
+    .map(stem);
+}
+
+/** Levenshtein distance, single-row DP. */
+function editDistance(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev = new Array(b.length + 1);
+  let curr = new Array(b.length + 1);
+  for (let j = 0; j <= b.length; j++) prev[j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[b.length];
+}
+
+/** 0..1 similarity between a query and one candidate identifier. */
+function similarity(input, candidate) {
+  if (!input || !candidate) return 0;
+  const a = input.toLowerCase();
+  const b = candidate.toLowerCase();
+  if (a === b) return 1;
+
+  // Tokenize the RAW strings: the camelCase boundaries are what make the tokens
+  // meaningful, so lowercasing first would collapse every identifier to one
+  // token and silently disable this whole signal.
+  const ta = tokenize(input);
+  const tb = tokenize(candidate);
+  let tokenScore = 0;
+  if (ta.length && tb.length) {
+    const setB = new Set(tb);
+    let shared = 0;
+    for (const t of new Set(ta)) if (setB.has(t)) shared++;
+    tokenScore = (2 * shared) / (ta.length + tb.length);
+  }
+
+  const longest = Math.max(a.length, b.length);
+  const editScore = longest ? 1 - editDistance(a, b) / longest : 0;
+
+  const shorter = Math.min(a.length, b.length);
+  const coverage = longest ? shorter / longest : 0;
+  const substringBonus = coverage >= 0.5 && (b.includes(a) || a.includes(b)) ? 0.15 : 0;
+
+  return Math.min(1, Math.max(tokenScore, editScore) + substringBonus);
+}
+
+/** Rank candidates against input; only scores >= threshold are returned. */
+function rankCandidates(input, candidates, options = {}) {
+  const limit = options.limit ?? 5;
+  const threshold = options.threshold ?? 0.45;
+  if (!input || !input.trim()) return [];
+  const scored = [];
+  for (const candidate of candidates) {
+    const score = similarity(input, candidate);
+    if (score >= threshold) scored.push({ name: candidate, score });
+  }
+  scored.sort((x, y) => (y.score !== x.score ? y.score - x.score : x.name.localeCompare(y.name)));
+  return scored.slice(0, limit).map((s) => s.name);
+}
+
+const isWordChar = (c) => c !== "" && /[a-z0-9_]/.test(c);
+
+/**
+ * Equivalent to the server's `new RegExp("\\b" + kw + "\\b", "i").test(field)`,
+ * without constructing a RegExp per field per keystroke. Word characters are
+ * [A-Za-z0-9_] exactly as \b defines them. Haystack must already be lowercase.
+ */
+function hasWord(hayLower, needleLower) {
+  if (!needleLower) return false;
+  let i = 0;
+  while ((i = hayLower.indexOf(needleLower, i)) !== -1) {
+    const before = i === 0 ? "" : hayLower[i - 1];
+    const after = i + needleLower.length >= hayLower.length ? "" : hayLower[i + needleLower.length];
+    if (!isWordChar(before) && !isWordChar(after)) return true;
+    i += 1;
+  }
+  return false;
+}
+
+/**
+ * The server's shared scorer, against fields that are already lowercased
+ * (data-loader.ts lowercases per call; precomputing is the same result, just
+ * fewer allocations). Field order matters: an exact match on a later field
+ * never wins once an earlier field matched, exactly as in the server.
+ */
+function matchKeywords(rawKeywords, lowerFields) {
+  let matchedCount = 0;
+  let exactBonus = 0;
+  for (const keyword of rawKeywords) {
+    const lowerKeyword = keyword.toLowerCase();
+    let matched = false;
+    for (const lowerField of lowerFields) {
+      if (lowerField === lowerKeyword) {
+        exactBonus += 1;
+        matched = true;
+        break;
+      }
+      if (keyword.length < 4) {
+        if (hasWord(lowerField, lowerKeyword)) { matched = true; break; }
+      } else if (lowerField.includes(lowerKeyword)) {
+        matched = true;
+        break;
+      }
+    }
+    if (matched) matchedCount += 1;
+  }
+  return { matchedCount, exactBonus };
+}
+
+/**
+ * Does every keyword appear in this name, reading it as an identifier rather
+ * than as prose? data-loader.ts:keywordsInName — the word-boundary rule that is
+ * right for sentences is wrong for names: 'fx' in TrackFX_GetParam has no
+ * boundary before it, so the word the caller typed never counted as a name hit.
+ */
+function keywordsInName(rawKeywords, name) {
+  const tokens = tokenize(name);
+  if (tokens.length === 0) return false;
+  return rawKeywords.every((keyword) => {
+    const needle = stem(compactForm(keyword)); // 'tracks' has to reach 'track'
+    return needle.length >= 2 && tokens.some((token) => token.includes(needle));
+  });
+}
+
+/**
+ * Name tier: the tie-break the keyword score cannot express.
+ *   1000 the caller typed the name itself, separators aside
+ *    500 the name starts with everything they typed
+ *    200 every keyword is in the name, not just in its description
+ * Without it 'count tracks' ranked BR_GetMediaTrackSendInfo_Envelope (whose
+ * description says "…to count track sends…") above CountTracks, and ties fell
+ * to alphabetical order. Mirrors data-loader.ts:nameTier.
+ */
+function nameTier(rawKeywords, name) {
+  if (!name || rawKeywords.length === 0) return 0;
+  const compactQuery = compactForm(rawKeywords.join(""));
+  if (compactQuery) {
+    const compactName = compactForm(name);
+    if (compactName === compactQuery) return 1000;
+    if (compactName.startsWith(compactQuery)) return 500;
+  }
+  return keywordsInName(rawKeywords, name) ? 200 : 0;
+}
+
+/** Score, then closeness of the name to the query, then A-Z. */
+function compareRanked(a, b, nameOf) {
+  if (b.score !== a.score) return b.score - a.score;
+  const simGap = Math.round(b.sim * 100) - Math.round(a.sim * 100);
+  if (simGap !== 0) return simGap;
+  return nameOf(a).localeCompare(nameOf(b));
+}
+
+const isNumeric = (text) => /^\d+$/.test(String(text).trim());
+
+const LANG_ALIASES = { "c++": "c", cpp: "c", eel: "eel2", jsfx: "eel2", py: "python" };
+const toLang = (value) => (value ? LANG_ALIASES[String(value).toLowerCase()] ?? String(value).toLowerCase() : undefined);
+
+/* Keywords a reader types as a filter rather than as content. */
+const FUNCTION_LANG_KEYWORDS = {
+  c: ["c", "cpp", "c++"],
+  eel2: ["eel", "eel2", "jsfx"],
+  lua: ["lua"],
+  python: ["python", "py"],
+};
+
+/* ============================================================================
+   Part 2 — datasets and search, mirroring src/data-loader.ts.
+   ========================================================================== */
+
+const FILES = {
+  reascript: "data/reascript-api.json",
+  actions: "data/actions-api.json",
+  jsfx: "data/jsfx-api.json",
+};
+// Served from the repo root (/webpage/) this resolves with "../"; from inside
+// webpage/ with "./". One of them matches every reasonable way to serve it.
+const BASES = ["../", "./", "../../"];
+
+const RAW = { reascript: null, actions: null, jsfx: null };
+const IDX = { reascript: null, actions: null, jsfx: null };
+
+async function fetchDataset(key) {
+  let lastError = null;
+  for (const base of BASES) {
+    try {
+      const res = await fetch(base + FILES[key], { cache: "no-cache" });
+      if (!res.ok) { lastError = new Error(res.status + " " + res.statusText); continue; }
+      return await res.json();
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError || new Error("not found");
+}
+
+/** Identify a hand-picked or dropped file by its shape, not its name. */
+function adoptRaw(json) {
+  if (json && Array.isArray(json.actions) && Array.isArray(json.sections)) { RAW.actions = json; return "actions"; }
+  if (json && Array.isArray(json.functions) && json.functions_by_language) { RAW.reascript = json; return "reascript"; }
+  if (json && Array.isArray(json.functions) && (json.operators || json.special_variables)) { RAW.jsfx = json; return "jsfx"; }
+  return null;
+}
+
+/* ---------------------------------------------------------------------------
+   Browser storage, so the page works opened straight from disk.
+
+   A file:// page cannot fetch(), so the offline path is: drop the three JSON
+   files once, and they are kept in this browser. Between them they are ~6.6 MB
+   of text, which is past what localStorage hands out (5-10 MB per origin, and
+   it counts characters, so ASCII text costs double in bytes). Each dataset is
+   therefore deflated before it is stored — deflate-raw, then base64, because
+   localStorage holds text only. All three come to roughly 1.8 M characters.
+
+   The payload carries its own encoding tag ('d' deflated, 't' plain) so a store
+   written by an older version, or by a browser without CompressionStream, still
+   reads back. If the browser refuses the write, the data still works for this
+   page view and the page says so rather than pretending it was saved.
+   ------------------------------------------------------------------------- */
+
+const LS_NS = "reaper-lookup.v1.";
+const LS_META = LS_NS + "meta";
+let storageUsable = null;
+
+/** Where each loaded dataset came from: "fetch" | "storage" | null. */
+const ORIGIN = { reascript: null, actions: null, jsfx: null };
+
+function storageAvailable() {
+  if (storageUsable !== null) return storageUsable;
+  try {
+    const probe = LS_NS + "probe";
+    localStorage.setItem(probe, "1");
+    localStorage.removeItem(probe);
+    storageUsable = true;
+  } catch {
+    storageUsable = false; // file:// in some browsers, or private mode
+  }
+  return storageUsable;
+}
+
+async function readStreamToString(readable) {
+  const reader = readable.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    total += value.length;
+  }
+  const bytes = new Uint8Array(total);
+  let at = 0;
+  for (const chunk of chunks) { bytes.set(chunk, at); at += chunk.length; }
+  return bytes;
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const CHUNK = 0x8000; // fromCharCode's argument limit
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+function base64ToBytes(b64) {
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+async function deflateText(text) {
+  const stream = new CompressionStream("deflate-raw");
+  const writer = stream.writable.getWriter();
+  writer.write(new TextEncoder().encode(text));
+  writer.close();
+  return bytesToBase64(await readStreamToString(stream.readable));
+}
+
+async function inflateText(b64) {
+  const stream = new DecompressionStream("deflate-raw");
+  const writer = stream.writable.getWriter();
+  writer.write(base64ToBytes(b64));
+  writer.close();
+  return new TextDecoder().decode(await readStreamToString(stream.readable));
+}
+
+function readMeta() {
+  if (!storageAvailable()) return {};
+  try {
+    return JSON.parse(localStorage.getItem(LS_META) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function writeMeta(meta) {
+  try {
+    localStorage.setItem(LS_META, JSON.stringify(meta));
+  } catch {
+    /* the meta map is cosmetic; a failed write only hides the saved-at label */
+  }
+}
+
+/** Store one dataset's text. Never throws: a refused write is a result. */
+async function persistDataset(key, text, originName) {
+  if (!storageAvailable()) return { ok: false, reason: "unavailable" };
+  let payload = "t" + text;
+  let encoding = "text";
+  if (typeof CompressionStream === "function") {
+    try {
+      payload = "d" + (await deflateText(text));
+      encoding = "deflate";
+    } catch {
+      /* no CompressionStream at runtime: fall back to plain text */
+    }
+  }
+  try {
+    localStorage.setItem(LS_NS + key, payload);
+  } catch (err) {
+    return { ok: false, reason: (err && err.name) === "QuotaExceededError" ? "quota" : String((err && err.message) || err), encoding };
+  }
+  const meta = readMeta();
+  meta[key] = {
+    file: originName || FILES[key].split("/").pop(),
+    bytes: text.length,
+    stored: payload.length,
+    encoding,
+    saved_at: new Date().toISOString(),
+  };
+  writeMeta(meta);
+  return { ok: true, encoding, bytes: text.length, stored: payload.length };
+}
+
+/** Read a stored dataset back, or null. Corrupt entries are dropped, not fatal. */
+async function restoreDataset(key) {
+  if (!storageAvailable()) return null;
+  const payload = localStorage.getItem(LS_NS + key);
+  if (!payload) return null;
+  try {
+    const text = payload[0] === "d" ? await inflateText(payload.slice(1)) : payload.slice(1);
+    return JSON.parse(text);
+  } catch {
+    forgetDataset(key);
+    return null;
+  }
+}
+
+function forgetDataset(key) {
+  if (!storageAvailable()) return;
+  try {
+    localStorage.removeItem(LS_NS + key);
+  } catch {
+    /* already unreadable */
+  }
+  const meta = readMeta();
+  delete meta[key];
+  writeMeta(meta);
+}
+
+function forgetAllDatasets() {
+  for (const key of Object.keys(FILES)) forgetDataset(key);
+}
+
+const mb = (chars) => (chars > 1048576 ? (chars / 1048576).toFixed(1) + " MB" : Math.round(chars / 1024) + " KB");
+
+function savedMap() {
+  return readMeta();
+}
+
+/* ---------------------------------------------------------------------------
+   Recent searches, one list per tab, in the same origin store. Recorded when a
+   result is opened — searching is cheap and half-typed queries are noise, so
+   only a search you acted on is worth showing back.
+   ------------------------------------------------------------------------- */
+
+const LS_RECENT = LS_NS + "recent";
+const RECENT_MAX = 8;
+
+function recentMap() {
+  if (!storageAvailable()) return {};
+  try {
+    return JSON.parse(localStorage.getItem(LS_RECENT) || "{}");
+  } catch {
+    return {};
+  }
+}
+
+function recentList(key) {
+  const list = recentMap()[key];
+  return Array.isArray(list) ? list.filter((x) => typeof x === "string" && x.trim()).slice(0, RECENT_MAX) : [];
+}
+
+function rememberQuery(key, query) {
+  const text = String(query || "").trim();
+  if (!text) return;
+  const map = recentMap();
+  const previous = Array.isArray(map[key]) ? map[key] : [];
+  map[key] = [text, ...previous.filter((x) => String(x).toLowerCase() !== text.toLowerCase())].slice(0, RECENT_MAX);
+  try {
+    localStorage.setItem(LS_RECENT, JSON.stringify(map));
+  } catch {
+    /* the recent list is a convenience; losing it changes nothing else */
+  }
+}
+
+function forgetQueries(key) {
+  const map = recentMap();
+  delete map[key];
+  try {
+    localStorage.setItem(LS_RECENT, JSON.stringify(map));
+  } catch {
+    /* see above */
+  }
+}
+
+/**
+ * Where a dataset came from, as the file itself records it in generated_by.
+ *
+ * A value shaped like v7.85/macOS-arm64 is a REAPER build, and gets the verb that
+ * implies: those two dumps were written out by an install. Anything else the file
+ * says about its own origin — the JSFX reference names the docs site, because no
+ * install was involved — is shown as written, not dressed up as a version. Only a
+ * genuinely unstamped dump falls back to saying so.
+ */
+function datasetStamp(key) {
+  const ix = index(key);
+  if (!ix) return "no data loaded yet";
+  const stamp = String(ix.raw.generated_by || "");
+  const when = new Date(ix.scraped_at || "");
+  const date = isNaN(when.getTime()) ? null : when.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  const origin = /^v\d/.test(stamp) ? `Built from REAPER ${stamp}` : stamp || "this dump records no REAPER version";
+  return `${origin}${date ? " · " + date : ""}`;
+}
+
+function describeLoadError(err) {
+  if (location.protocol === "file:") {
+    return storageAvailable()
+      ? "opened from disk, so nothing could be read automatically — drop the files once and they will be kept in this browser"
+      : "opened from disk, and this browser will not let a file:// page keep data. Serve the folder over HTTP (python3 -m http.server) or use Chrome or Firefox.";
+  }
+  return String((err && err.message) || err || "dataset not found");
+}
+
+function indexReascript() {
+  const raw = RAW.reascript;
+  if (!raw) return null;
+  const fns = (raw.functions || []).map((f) => {
+    f._n = String(f.name || "").toLowerCase();
+    f._d = String(f.description || "").toLowerCase();
+    return f;
+  });
+  const byName = new Map();
+  for (const f of fns) if (!byName.has(f.name)) byName.set(f.name, f);
+  return {
+    raw,
+    fns,
+    byName,
+    names: fns.map((f) => f.name),
+    total: fns.length,
+    scraped_at: raw.scraped_at,
+    generated_by: raw.generated_by || "reascript-api",
+  };
+}
+
+function indexJsfx() {
+  const raw = RAW.jsfx;
+  if (!raw) return null;
+  const fns = (raw.functions || []).map((f) => {
+    f._n = String(f.name || "").toLowerCase();
+    f._d = String(f.description || "").toLowerCase();
+    f._c = String(f.category || "").toLowerCase();
+    return f;
+  });
+  const byName = new Map();
+  for (const f of fns) if (!byName.has(f.name)) byName.set(f.name, f);
+  return {
+    raw,
+    fns,
+    byName,
+    names: fns.map((f) => f.name),
+    total: fns.length,
+    scraped_at: raw.scraped_at,
+    generated_by: "jsfx-api",
+  };
+}
+
+function indexActions() {
+  const raw = RAW.actions;
+  if (!raw) return null;
+  const actions = (raw.actions || []).map((a) => {
+    a._n = String(a.name || "").toLowerCase();
+    a._c = String(a.category || "").toLowerCase();
+    a._i = String(a.id || "");
+    return a;
+  });
+  const byId = new Map();
+  const categories = new Map();
+  for (const a of actions) {
+    if (!byId.has(a._i)) byId.set(a._i, []);
+    byId.get(a._i).push(a);
+    if (a.category) categories.set(a.category, (categories.get(a.category) || 0) + 1);
+  }
+  return {
+    raw,
+    actions,
+    byId,
+    sections: raw.sections || [],
+    sectionNames: (raw.sections || []).map((s) => s.name),
+    categories: [...categories.keys()].sort((a, b) => a.localeCompare(b)),
+    categoryCounts: categories,
+    total: actions.length,
+    scraped_at: raw.scraped_at,
+    generated_by: raw.generated_by || "actions-api",
+  };
+}
+
+const INDEXERS = { reascript: indexReascript, actions: indexActions, jsfx: indexJsfx };
+
+function index(key) {
+  if (!IDX[key] && RAW[key]) IDX[key] = INDEXERS[key]();
+  return IDX[key];
+}
+
+/** The section meta row for a section name, or null. */
+function sectionMeta(name) {
+  const ix = index("actions");
+  return ix ? ix.sections.find((s) => s.name === name) : undefined;
+}
+
+/** Resolve a section name OR one of its contexts ('Main (alt-3)') to canonical. */
+function resolveSection(name) {
+  const ix = index("actions");
+  if (!ix || !name) return null;
+  const target = String(name).trim().toLowerCase();
+  for (const section of ix.sections) {
+    if (section.name.toLowerCase() === target) return section.name;
+    if ((section.contexts || []).some((c) => c.toLowerCase() === target)) return section.name;
+  }
+  return null;
+}
+
+/** REAPER's slash families: 'SWS' matches 'SWS/BR', 'Track' matches only 'Track'. */
+function categoryMatches(category, filter) {
+  if (category === null || category === undefined) return false;
+  const c = String(category).toLowerCase();
+  const f = String(filter).trim().toLowerCase();
+  return c === f || c.startsWith(f + "/") || c.includes("/" + f);
+}
+
+/** search_functions {api:'reascript'} — data-loader.ts:searchReaScriptFunctions */
+function searchReaScript(query, language) {
+  const ix = index("reascript");
+  if (!ix) return [];
+  const rawKeywords = String(query).toLowerCase().split(/\s+/).filter((k) => k.length > 0);
+  if (!rawKeywords.length) return [];
+
+  let extractedLang = null;
+  outer: for (const kw of rawKeywords) {
+    for (const [lang, aliases] of Object.entries(FUNCTION_LANG_KEYWORDS)) {
+      if (aliases.includes(kw)) { extractedLang = lang; break outer; }
+    }
+  }
+  const effectiveLang = toLang(language || extractedLang || undefined);
+
+  const scored = [];
+  for (const f of ix.fns) {
+    const { matchedCount, exactBonus } = matchKeywords(rawKeywords, [f._n, f._d]);
+    if (matchedCount > 0) scored.push({ f, sim: similarity(query, f.name), score: matchedCount + exactBonus * 100 + nameTier(rawKeywords, f.name) });
+  }
+  scored.sort((a, b) => compareRanked(a, b, (r) => r.f.name));
+  let out = scored.map((s) => s.f);
+  if (effectiveLang && ["c", "eel2", "lua", "python"].includes(effectiveLang)) {
+    out = out.filter((f) => (f.available_in || []).includes(effectiveLang));
+  }
+  return out;
+}
+
+/** search_functions {api:'jsfx'} — data-loader.ts:searchJSFXFunctions */
+function searchJSFX(query) {
+  const ix = index("jsfx");
+  if (!ix) return [];
+  const rawKeywords = String(query).toLowerCase().split(/\s+/).filter((k) => k.length > 0);
+  if (!rawKeywords.length) return [];
+  const scored = [];
+  for (const f of ix.fns) {
+    const { matchedCount, exactBonus } = matchKeywords(rawKeywords, [f._n, f._d, f._c]);
+    if (matchedCount > 0) scored.push({ f, sim: similarity(query, f.name), score: matchedCount + exactBonus * 100 + nameTier(rawKeywords, f.name) });
+  }
+  scored.sort((a, b) => compareRanked(a, b, (r) => r.f.name));
+  return scored.map((s) => s.f);
+}
+
+/** search_actions — data-loader.ts:searchActions, including the AND-with-fallback. */
+function searchActions(query, filters = {}) {
+  const ix = index("actions");
+  if (!ix) return [];
+  const rawKeywords = String(query).toLowerCase().split(/\s+/).filter((k) => k.length > 0);
+  if (!rawKeywords.length) return [];
+
+  let sourceFilter = filters.source ? String(filters.source).trim().toLowerCase() : null;
+  if (!sourceFilter) {
+    if (rawKeywords.some((k) => k === "sws" || k === "xenakios")) sourceFilter = "sws";
+    else if (rawKeywords.some((k) => k === "reaper" || k === "stock")) sourceFilter = "reaper";
+  }
+  if (sourceFilter === "all" || sourceFilter === "any") sourceFilter = null;
+  if (sourceFilter === "stock") sourceFilter = "reaper";
+
+  const sectionFilter = filters.section ? resolveSection(filters.section) : null;
+  const categoryFilter = filters.category || null;
+
+  const scored = [];
+  for (const action of ix.actions) {
+    if (sourceFilter && action.source !== sourceFilter) continue;
+    if (sectionFilter && action.section !== sectionFilter) continue;
+    if (categoryFilter && !categoryMatches(action.category, categoryFilter)) continue;
+    const { matchedCount, exactBonus } = matchKeywords(rawKeywords, [action._n, action._c, action._i]);
+    if (matchedCount > 0) scored.push({ action, matchedCount, sim: similarity(query, action.name), score: matchedCount + exactBonus * 100 + nameTier(rawKeywords, action.name) });
+  }
+
+  const fullMatches = scored.filter((r) => r.matchedCount === rawKeywords.length);
+  const candidates = fullMatches.length > 0 ? fullMatches : scored;
+  candidates.sort((a, b) => {
+    if (b.score !== a.score) return b.score - a.score;
+    const simGap = Math.round(b.sim * 100) - Math.round(a.sim * 100);
+    if (simGap !== 0) return simGap;
+    const bySection = a.action.section.localeCompare(b.action.section);
+    if (bySection !== 0) return bySection;
+    return a.action.name.localeCompare(b.action.name);
+  });
+  return candidates.map((r) => r.action);
+}
+
+/** get_action — every action sharing an id, optionally narrowed to one section. */
+function getActions(id, section) {
+  const ix = index("actions");
+  if (!ix) return [];
+  const wanted = String(id).trim();
+  let matches = ix.actions.filter((a) => a._i === wanted);
+  if (section) {
+    const resolved = resolveSection(section);
+    if (resolved) matches = matches.filter((a) => a.section === resolved);
+  }
+  return matches;
+}
+
+/** get_function_info — exact name, case-insensitive (server does the same). */
+function getFunction(api, name) {
+  const ix = index(api);
+  if (!ix || !name) return null;
+  return ix.byName.get(name) || ix.byName.get(String(name).toLowerCase()) || null;
+}
+
+/* ============================================================================
+   Part 3 — the page. Search results come from Part 2 unchanged; everything
+   here is presentation, plus the same echo / notes / did_you_mean text the
+   server sends, so you can read a session transcript against this page.
+   ========================================================================== */
+
+const $ = (sel) => document.querySelector(sel);
+const el = (tag, attrs, kids) => {
+  const node = document.createElement(tag);
+  if (attrs) for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") node.className = v;
+    else if (k === "text") node.textContent = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v);
+    else if (v !== null && v !== undefined) node.setAttribute(k, v);
+  }
+  for (const kid of [].concat(kids === undefined ? [] : kids)) {
+    if (kid === null || kid === undefined || kid === false) continue;
+    node.appendChild(typeof kid === "string" ? document.createTextNode(kid) : kid);
+  }
+  return node;
+};
+
+const TABS = [
+  { key: "fn", label: "Functions", dataset: "reascript", api: "reascript" },
+  { key: "ac", label: "Actions", dataset: "actions" },
+  { key: "jx", label: "JSFX", dataset: "jsfx", api: "jsfx" },
+];
+const LIMITS = ["10", "25", "50", "100", "all"];
+const PAGE = 100;
+
+const state = {
+  tab: "fn",
+  q: "",
+  lang: "",
+  section: "",
+  category: "",
+  source: "",
+  limit: "50",
+  sel: null,
+  shown: PAGE,
+  results: [],
+  view: null, // null | "about"
+  loadError: null,
+  notice: null, // one-line result of saving files to this browser
+  loading: false,
+};
+
+const tabDef = () => TABS.find((t) => t.key === state.tab);
+const ready = () => RAW[tabDef().dataset] !== null;
+
+/* ---------------------------------------------------------------- data load */
+
+async function ensureDataset(key, quiet) {
+  if (RAW[key]) return true;
+  state.loading = true;
+  state.loadError = null;
+  if (!quiet) render();
+
+  let fetchError = null;
+  try {
+    RAW[key] = await fetchDataset(key);
+    ORIGIN[key] = "fetch";
+  } catch (err) {
+    fetchError = err;
+    try {
+      const stored = await restoreDataset(key);
+      if (stored) {
+        RAW[key] = stored;
+        ORIGIN[key] = "storage";
+      }
+    } catch (err2) {
+      fetchError = err2;
+    }
+  }
+
+  if (RAW[key]) {
+    index(key);
+    filtersBuiltFor = null; // filters carry dataset-derived option lists (sections)
+    state.loading = false;
+    state.loadError = null;
+    return true;
+  }
+  state.loading = false;
+  state.loadError = describeLoadError(fetchError);
+  return false;
+}
+
+async function loadFiles(fileList) {
+  const picked = [...fileList];
+  let adopted = 0;
+  const saved = [];
+  state.loadError = null;
+  state.notice = null;
+
+  for (const file of picked) {
+    let text;
+    try {
+      text = await file.text();
+    } catch (err) {
+      state.loadError = file.name + ": could not be read (" + ((err && err.message) || err) + ")";
+      continue;
+    }
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (err) {
+      state.loadError = file.name + " is not valid JSON (" + ((err && err.message) || err) + ")";
+      continue;
+    }
+    const key = adoptRaw(json);
+    if (!key) {
+      state.loadError = file.name + " is not one of this repo's three API databases.";
+      continue;
+    }
+    index(key);
+    filtersBuiltFor = null;
+    ORIGIN[key] = "dropped";
+    adopted += 1;
+    const result = await persistDataset(key, text, file.name);
+    saved.push({ key, name: file.name, result });
+  }
+
+  if (!adopted) {
+    if (picked.length && !state.loadError) state.loadError = "none of those files were recognised";
+    render();
+    return;
+  }
+
+  const failed = saved.filter((s) => !s.result.ok);
+  if (failed.length) {
+    state.notice =
+      failed.length +
+      (failed.length === 1 ? " dataset is" : " datasets are") +
+      " loaded but were not saved" +
+      (failed[0].result.reason === "quota"
+        ? " — this browser's storage is full, so clear the saved files and drop them again"
+        : failed[0].result.reason === "unavailable"
+          ? " — this browser will not let a file:// page keep data"
+          : " (" + failed[0].result.reason + ")") +
+      ". They work until you close the tab.";
+  } else {
+    const bytes = saved.reduce((sum, s) => sum + s.result.stored, 0);
+    const plain = saved.reduce((sum, s) => sum + s.result.bytes, 0);
+    state.notice =
+      saved.length + (saved.length === 1 ? " file saved in this browser" : " files saved in this browser") +
+      " (" + mb(plain) + " → " + mb(bytes) + "). Reopen this page any time — no server needed.";
+  }
+
+  renderProvenance();
+  if (ready()) runSearch();
+  render();
+}
+
+/** What each loaded dataset is and where it came from, as a tab tooltip. */
+function datasetTip(key) {
+  if (!IDX[key]) return `${FILES[key]} — not loaded`;
+  const saved = savedMap()[key];
+  const from =
+    ORIGIN[key] === "storage" ? `browser storage, saved ${String(saved?.saved_at || "?").slice(0, 10)} (${mb(saved?.stored || 0)})`
+      : ORIGIN[key] === "dropped" ? "dropped in this tab"
+        : "fetched from data/";
+  return `${IDX[key].generated_by} · ${IDX[key].total.toLocaleString()} entries · scraped ${IDX[key].scraped_at || "unknown"} · ${from}`;
+}
+
+function renderProvenance() {
+  const saved = savedMap();
+  const about = $("#about");
+  const stored = Object.keys(saved).filter((k) => saved[k]);
+  const storedBytes = stored.reduce((sum, k) => sum + (saved[k].stored || 0), 0);
+  const loadedCount = Object.keys(FILES).filter((k) => IDX[k]).length;
+  about.textContent = state.notice
+    ? state.notice
+    : `${loadedCount} of 3 datasets loaded` +
+      (stored.length ? `, ${stored.length} kept in this browser (${mb(storedBytes)})` : "");
+  const btn = $("#storagebtn");
+  if (btn) btn.style.display = stored.length ? "" : "none";
+}
+
+/* -------------------------------------------------------------------- hash */
+
+function writeHash() {
+  const p = new URLSearchParams();
+  p.set("tab", state.tab);
+  if (state.q) p.set("q", state.q);
+  if (state.tab === "fn" && state.lang) p.set("lang", state.lang);
+  if (state.tab === "ac") {
+    if (state.section) p.set("section", state.section);
+    if (state.category) p.set("category", state.category);
+    if (state.source) p.set("source", state.source);
+  }
+  if (state.limit !== "50") p.set("limit", state.limit);
+  if (state.sel) p.set("sel", state.sel);
+  const next = "#" + p.toString();
+  if (next !== location.hash) history.replaceState(null, "", next);
+}
+
+function readHash() {
+  const p = new URLSearchParams(location.hash.replace(/^#/, ""));
+  if (p.get("tab")) state.tab = p.get("tab");
+  if (!TABS.some((t) => t.key === state.tab)) state.tab = "fn";
+  state.q = p.get("q") || "";
+  state.lang = p.get("lang") || "";
+  state.section = p.get("section") || "";
+  state.category = p.get("category") || "";
+  state.source = p.get("source") || "";
+  state.limit = p.get("limit") || "50";
+  state.sel = p.get("sel") || null;
+  state.shown = PAGE;
+}
+
+/* ------------------------------------------------------------------ search */
+
+function effectiveLimit() {
+  return state.limit === "all" ? Infinity : Number(state.limit);
+}
+
+/** Compute the result set plus the echo/notes a matching tool call would send. */
+function runSearch() {
+  state.view = null;
+  const tab = tabDef();
+  const out = { echo: [], notes: [], error: null, didYouMean: [], cta: null };
+  state.results = [];
+  if (!ready() || !state.q.trim()) { state.meta = out; return; }
+
+  const q = state.q.trim();
+  const limit = effectiveLimit();
+
+  if (tab.key === "fn") {
+    if (isNumeric(q)) {
+      out.error = `'${q}' looks like a REAPER command ID. Command IDs are actions and live in a different dataset from API functions.`;
+      out.cta = { label: `Search actions for ${q}`, act: () => { state.tab = "ac"; syncControls(); ensureDataset("actions").then(() => { runSearch(); render(); }); } };
+      state.meta = out;
+      return;
+    }
+    const lang = toLang(state.lang || undefined);
+    const all = searchReaScript(q, state.lang || undefined);
+    state.results = all.slice(0, limit);
+    out.total = all.length;
+    out.echo.push(["api", tab.api], ["query", q], ["limit", state.limit]);
+    if (lang) out.echo.push(["language", lang]);
+    if (all.length === 0) {
+      out.error = `No ${tab.api} function matches '${q}'.`;
+      out.didYouMean = rankCandidates(q, IDX.reascript.names);
+      const broadest = q.split(/\s+/).sort((a, b) => b.length - a.length).slice(0, 1).join(" ").toLowerCase();
+      out.notes.push(`Keywords are matched against function names and their descriptions; a word that only appears in prose will not match a name.`);
+      if (broadest !== q.toLowerCase()) out.cta = { label: `broader: ${broadest}`, act: () => setQuery(broadest) };
+    } else if (all.length > limit) {
+      out.notes.push(`${all.length - limit} more matches were cut — raise limit or narrow the query.`);
+    }
+    state.meta = out;
+    return;
+  }
+
+  if (tab.key === "jx") {
+    const all = searchJSFX(q);
+    state.results = all.slice(0, limit);
+    out.total = all.length;
+    out.echo.push(["api", "jsfx"], ["query", q], ["limit", state.limit]);
+    if (state.lang) out.notes.push("JSFX built-ins are Eel2 only, so the language filter had no effect.");
+    if (all.length === 0) {
+      out.error = `No jsfx function matches '${q}'.`;
+      out.didYouMean = rankCandidates(q, IDX.jsfx.names);
+      const broadest = q.split(/\s+/).sort((a, b) => b.length - a.length)[0] || q;
+      out.cta = { label: `broader: ${broadest}`, act: () => setQuery(broadest) };
+    } else if (all.length > limit) {
+      out.notes.push(`${all.length - limit} more matches were cut.`);
+    }
+    state.meta = out;
+    return;
+  }
+
+  // actions
+  const resolvedSection = state.section ? resolveSection(state.section) : null;
+  if (state.section && !resolvedSection) {
+    out.error = `Unknown action section '${state.section}'. Valid sections: ${IDX.actions.sectionNames.join(", ")}. Any context listed under a section is accepted too, e.g. 'Main (alt-3)'.`;
+    out.didYouMean = rankCandidates(state.section, IDX.actions.sectionNames, { threshold: 0.3 });
+    out.echo.push(["query", q], ["section", state.section]);
+    state.meta = out;
+    return;
+  }
+  const all = searchActions(q, {
+    section: resolvedSection || undefined,
+    category: state.category || undefined,
+    source: state.source || undefined,
+  });
+  state.results = all.slice(0, limit);
+  out.total = all.length;
+  out.sectionResolved = state.section && resolvedSection && resolvedSection !== state.section ? resolvedSection : null;
+  out.echo.push(["query", q], ["limit", state.limit]);
+  if (resolvedSection) out.echo.push(["section", resolvedSection]);
+  if (state.category) out.echo.push(["category", state.category]);
+  if (state.source && state.source !== "all") out.echo.push(["source", state.source]);
+
+  if (all.length === 0) {
+    const applied = out.echo.filter(([k]) => ["section", "category", "source"].includes(k));
+    if (isNumeric(q)) {
+      out.error = `No action matches the command ID '${q}'${resolvedSection ? ` in section '${resolvedSection}'` : ""}. It may belong to a per-install ReaScript or a non-SWS extension, which are excluded from this dataset.`;
+    } else {
+      out.error = `No action matches '${q}'${applied.length ? ` with ${applied.map(([k, v]) => `${k}='${v}'`).join(" + ")}` : ""}.`;
+      if (state.category) out.didYouMean = rankCandidates(state.category, IDX.actions.categories, { threshold: 0.3 });
+    }
+    if (applied.length) {
+      out.cta = {
+        label: `drop the ${applied.map(([k]) => k).join("/")} filter`,
+        act: () => { state.section = ""; state.category = ""; state.source = ""; syncControls(); runSearch(); render(); },
+      };
+      out.notes.push(`Applied filters: ${applied.map(([k, v]) => `${k}='${v}'`).join(", ")}.`);
+    } else {
+      const keepWord = q.split(/\s+/).filter((w) => !["sws", "reaper", "stock", "all"].includes(w.toLowerCase()));
+      const broader = keepWord.slice(0, Math.max(1, keepWord.length - 1)).join(" ") || q;
+      if (broader !== q) out.cta = { label: `broader: ${broader}`, act: () => setQuery(broader) };
+      out.notes.push("Every keyword must match; try removing your least certain word.");
+    }
+    out.notes.push("The sections and categories available are listed under 'about / caveats'.");
+  } else if (all.length > limit) {
+    out.notes.push(`${all.length - limit} more matches were cut — raise limit or narrow the query.`);
+  }
+  if (out.sectionResolved) out.notes.push(`section '${state.section}' resolved to '${out.sectionResolved}'.`);
+  state.meta = out;
+}
+
+function setQuery(value) {
+  state.q = value;
+  state.notice = null;
+  $("#q").value = value;
+  state.shown = PAGE;
+  state.sel = null;
+  runSearch();
+  render();
+}
+
+/* ------------------------------------------------------------- highlighting */
+
+function needles() {
+  return (state.q || "")
+    .toLowerCase()
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length >= 2)
+    .sort((a, b) => b.length - a.length);
+}
+
+/** Append `text` to parent, wrapping keyword hits in <mark>. No innerHTML. */
+function markText(parent, text, list) {
+  const hay = String(text ?? "");
+  if (!list || !list.length || !hay) { parent.appendChild(document.createTextNode(hay)); return; }
+  const lower = hay.toLowerCase();
+  const spans = [];
+  for (const n of list) {
+    let i = 0;
+    while ((i = lower.indexOf(n, i)) !== -1) { spans.push([i, i + n.length]); i += 1; }
+  }
+  spans.sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const span of spans) {
+    const last = merged[merged.length - 1];
+    if (last && span[0] < last[1]) last[1] = Math.max(last[1], span[1]);
+    else merged.push(span);
+  }
+  let pos = 0;
+  for (const [start, end] of merged) {
+    if (start > pos) parent.appendChild(document.createTextNode(hay.slice(pos, start)));
+    parent.appendChild(el("mark", null, hay.slice(start, end)));
+    pos = end;
+  }
+  if (pos < hay.length) parent.appendChild(document.createTextNode(hay.slice(pos)));
+}
+
+/* ------------------------------------------------------------------- list */
+
+function rowForKey(key) {
+  return state.tab === "fn" || state.tab === "jx" ? `fn:${key}` : key;
+}
+
+function renderList() {
+  const list = $("#list");
+  list.textContent = "";
+  const tab = tabDef();
+  const meta = state.meta || { echo: [], notes: [] };
+
+  if (state.loading) { list.appendChild(el("div", { class: "state" }, el("div", { text: "loading " + FILES[tab.dataset] + " …" }))); return; }
+  if (!ready()) { list.appendChild(loadPanel()); return; }
+  if (!state.q.trim()) { list.appendChild(hintPanel()); return; }
+  if (meta.error) { list.appendChild(missPanel(meta)); return; }
+  if (!state.results.length) {
+    list.appendChild(el("div", { class: "state" }, el("h3", { text: "No matches" }), el("div", { class: "hint", text: `${meta.total || 0} results for '${state.q}'` })));
+    return;
+  }
+
+  const shown = state.results.slice(0, state.shown);
+  const frag = document.createDocumentFragment();
+  for (const item of shown) frag.appendChild(renderRow(item));
+  list.appendChild(frag);
+
+  if (state.results.length > shown.length) {
+    list.appendChild(el("button", {
+      class: "more",
+      type: "button",
+      text: `show ${Math.min(PAGE, state.results.length - shown.length)} more of ${state.results.length} (limit ${state.limit})`,
+      onclick: () => { state.shown += PAGE; renderList(); },
+    }));
+  } else if (state.results.length > PAGE) {
+    list.appendChild(el("div", { class: "more", text: `${state.results.length} results` }));
+  }
+}
+
+function renderRow(item) {
+  const ns = needles();
+  if (state.tab === "ac") {
+    const key = `${item.id}@${item.section}`;
+    const title = el("span", { class: "name sentence" });
+    markText(title, item.name, ns);
+    const row = el("div", {
+    class: "row" + (state.sel === key ? " sel" : ""),
+    role: "button",
+    tabindex: "0",
+    onclick: () => select(key),
+    onkeydown: (e) => { if (e.key === "Enter") select(key); },
+  }, [
+    el("div", { class: "t" }, [title, el("span", { class: "id", text: item.id })]),
+    el("div", { class: "s" }, [
+      el("span", { class: "badge sec", text: item.section }),
+      item.category ? el("span", { class: "badge", text: item.category }) : null,
+      el("span", { class: "badge " + item.source, text: item.source }),
+    ]),
+  ]);
+  row.__key = key;
+  return row;
+  }
+  const isFn = state.tab === "fn";
+  const title = el("span", { class: "name" });
+  markText(title, item.name, ns);
+  const subs = [];
+  if (isFn) {
+    const langs = item.available_in || [];
+    const want = toLang(state.lang || undefined);
+    for (const l of ["c", "eel2", "lua", "python"]) {
+      if (!langs.includes(l)) continue;
+      subs.push(el("span", { class: "badge lang" + (want === l ? " on" : ""), text: l }));
+    }
+  } else if (item.category) {
+    subs.push(el("span", { class: "badge", text: item.category }));
+  }
+  const snippet = el("span", { class: "s" });
+  markText(snippet, String(item.description || "").slice(0, 220), ns);
+  const key = "fn:" + item.name;
+  const row = el("div", {
+    class: "row" + (state.sel === key ? " sel" : ""),
+    role: "button",
+    tabindex: "0",
+    onclick: () => select(key),
+    onkeydown: (e) => { if (e.key === "Enter") select(key); },
+  }, [
+    el("div", { class: "t" }, [title]),
+    el("div", { class: "s" }, [subs.length ? el("span", { class: "s" }, subs) : null, item.description ? snippet : el("i", { class: "hint", text: "no description" })]),
+  ]);
+  row.__key = key;
+  return row;
+}
+
+function select(key) {
+  state.sel = key;
+  rememberQuery(state.tab, state.q);
+  writeHash();
+  render();
+  const row = document.querySelector(".row.sel");
+  if (row) row.scrollIntoView({ block: "nearest" });
+}
+
+function currentRows() {
+  return [...document.querySelectorAll("#list .row")];
+}
+
+function move(delta) {
+  const rows = currentRows();
+  if (!rows.length) return;
+  const at = rows.findIndex((r) => r.classList.contains("sel"));
+  const i = at === -1 ? (delta > 0 ? 0 : rows.length - 1) : Math.min(rows.length - 1, Math.max(0, at + delta));
+  if (rows[i].__key) select(rows[i].__key);
+}
+
+/* ----------------------------------------------------------------- panels */
+
+function loadPanel() {
+  const key = tabDef().dataset;
+  const saved = savedMap();
+  const missing = ["reascript", "actions", "jsfx"].filter((k) => !IDX[k]);
+  const wanted = missing.map((k) => FILES[k].split("/").pop());
+  return el("div", { class: "state" }, [
+    el("h3", { text: "Drop the data files once" }),
+    el("div", null, "Grab " + (wanted.length === 1 ? wanted[0] : "the " + wanted.length + " files " + wanted.join(", ")) + " from this repo's " + el("code", { text: "data/" }) + " folder and drop them anywhere on this page. They are stored in this browser (compressed), so the next visit needs nothing."),
+    el("div", { class: "files" }, [
+      el("label", { class: "fbtn" }, [
+        el("input", { type: "file", id: "filein", accept: ".json", multiple: "", onchange: (e) => loadFiles(e.target.files) }),
+        "or choose them",
+      ]),
+      el("span", { class: "hint", text: "dropping all three at once works too" }),
+    ]),
+    Object.keys(saved).length
+      ? el("div", { class: "hint" }, [
+          "already in this browser: ",
+          ...Object.entries(saved).map(([k, v]) => `${k} (${v.file}, ${mb(v.stored)}, saved ${String(v.saved_at).slice(0, 10)}) `),
+        ])
+      : null,
+    Object.keys(saved).length
+      ? el("div", { class: "hint" }, "Dropping a newer file replaces the saved copy of that dataset. Refresh after replacing to see it everywhere.")
+      : null,
+    state.loadError ? el("div", { class: "warn", text: state.loadError }) : null,
+    el("details", null, [
+      el("summary", { class: "hint", text: "alternative: serve the folder over HTTP" }),
+      el("div", { class: "hint", style: "margin-top:6px" }, "Then the page reads data/ by itself and always shows the latest scrape:"),
+      el("div", { style: "margin-top:4px" }, [el("code", { text: "python3 -m http.server 8080" }), " from the repo root, then ", el("code", { text: "http://localhost:8080/webpage/" })]),
+    ]),
+  ]);
+}
+
+function hintPanel() {
+  const ix = IDX[tabDef().dataset];
+  const noun = state.tab === "ac" ? "actions" : state.tab === "jx" ? "JSFX built-ins" : "functions";
+  const recents = recentList(state.tab);
+  return el("div", { class: "state" }, [
+    el("h3", { text: ix ? `${ix.total.toLocaleString()} ${noun}` : "ready" }),
+    el("div", { class: "hint", text: datasetStamp(tabDef().dataset) }),
+    recents.length
+      ? el("div", null, [
+          el("div", { class: "hint", style: "margin-top:10px", text: "recent" }),
+          el("div", { class: "ym" }, [
+            ...recents.map((s) => el("button", { type: "button", text: s, onclick: () => setQuery(s) })),
+            el("button", {
+              type: "button",
+              title: "clear recent searches for this tab",
+              text: "×",
+              onclick: () => { forgetQueries(state.tab); render(); },
+            }),
+          ]),
+        ])
+      : null,
+  ]);
+}
+
+function missPanel(meta) {
+  return el("div", { class: "state" }, [
+    el("h3", { text: "No results" }),
+    el("div", { class: "warn", text: meta.error }),
+    meta.didYouMean && meta.didYouMean.length
+      ? el("div", null, [
+          el("div", { class: "hint", text: "did you mean" }),
+          el("div", { class: "ym" }, meta.didYouMean.map((n) => el("button", { type: "button", text: n, onclick: () => setQuery(n) }))),
+        ])
+      : null,
+    meta.cta ? el("div", null, [el("button", { class: "linkbtn", type: "button", text: meta.cta.label, onclick: meta.cta.act })]) : null,
+    ...meta.notes.map((n) => el("div", { class: "hint", text: n })),
+  ]);
+}
+
+/* ----------------------------------------------------------------- detail */
+
+/** Copy affordance for a codebox. Two pages of paper, until it becomes a tick. */
+function copyButton(getText) {
+  return el("button", {
+    class: "copy",
+    type: "button",
+    text: "⧉",
+    title: "copy to clipboard",
+    "aria-label": "copy to clipboard",
+    onclick: async (e) => {
+      e.stopPropagation();
+      const btn = e.currentTarget;
+      try {
+        await navigator.clipboard.writeText(getText());
+        btn.textContent = "✓";
+      } catch {
+        btn.textContent = "⧉";
+        btn.title = "clipboard blocked here — select the text and copy";
+      }
+      setTimeout(() => (btn.textContent = "⧉"), 1200);
+    },
+  });
+}
+
+function signatureBlock(lang, sig, fname) {
+  const ret = (sig.return_values && sig.return_values[0] && sig.return_values[0].type) || "void";
+  const params = sig.parameters || [];
+  const line = el("div", { class: "sig" }, [
+    el("span", { class: "rt", text: ret }),
+    " ",
+    el("span", { class: "fn", text: sig.name || fname }),
+    "(",
+    ...params.flatMap((p, i) => [
+      el("span", { class: "ty", text: p.type || "" }),
+      " ",
+      el("span", { class: "pn", text: p.name || "" }),
+      i < params.length - 1 ? ", " : "",
+    ]),
+    ")",
+    copyButton(() => `${ret} ${sig.name || fname}(${params.map((p) => `${p.type || ""} ${p.name || ""}`.trim()).join(", ")})`),
+  ]);
+  const list = el("div", { class: "plist" },
+    params.flatMap((p) => [
+      el("span", { class: "t", text: p.type || "" }),
+      el("span", { class: "n", text: p.name || "" }),
+      el("span", { class: "pd", text: p.description || (p.optional ? "optional" : "") }),
+    ])
+  );
+  return el("div", null, [
+    el("div", { class: "langtag", text: lang }),
+    line,
+    params.length ? list : null,
+  ]);
+}
+
+function functionDetail(name) {
+  const api = tabDef().api;
+  const fn = getFunction(api, name);
+  if (!fn) return el("div", { class: "state" }, el("div", { text: `No ${api} function named '${name}' in this dataset.` }));
+  const want = state.tab === "fn" ? toLang(state.lang || undefined) : undefined;
+  const langs = want ? [want] : ["c", "eel2", "lua", "python"].filter((l) => (fn.available_in || []).includes(l));
+  const sigs = fn.signatures || {};
+  const otherApi = api === "reascript" ? "jsfx" : "reascript";
+  const other = RAW[otherApi] ? getFunction(otherApi, fn.name) : null;
+  return el("div", null, [
+    el("h2", { text: fn.name }),
+    el("div", { class: "metarow" }, (fn.available_in || []).map((l) => el("span", { class: "badge lang" + (want === l ? " on" : ""), text: l }))),
+    want ? el("div", { class: "hint", text: `Only the ${want} binding is shown, as the server shapes it when language is passed. Clear the language filter for every binding.` }) : null,
+    // What it does before how to call it: the description is why you opened it.
+    el("div", { class: "sect-h", text: "description" }),
+    fn.description
+      ? el("div", { class: "desc", text: fn.description })
+      : el("div", { class: "desc empty", text: "no description in this dataset" }),
+    el("div", { class: "sect-h", text: "signature" }),
+    ...langs.map((l) =>
+      sigs[l] ? signatureBlock(l, sigs[l], fn.name) : el("div", { class: "hint", text: `${l}: no signature in this dataset` })
+    ),
+    other
+      ? el("div", { style: "margin-top:14px" }, [
+          el("div", { class: "warn" }, [
+            `'${fn.name}' also exists in the ${otherApi} dataset — the two references are disjoint, so this is a different function with the same name. `,
+            el("button", {
+              class: "linkbtn",
+              type: "button",
+              text: "open it",
+              onclick: () => {
+                state.tab = otherApi === "jsfx" ? "jx" : "fn";
+                state.sel = "fn:" + fn.name;
+                filtersBuiltFor = null;
+                syncControls();
+                ensureDataset(tabDef().dataset).then(() => { runSearch(); render(); });
+              },
+            }),
+          ]),
+        ])
+      : null,
+  ]);
+}
+
+function actionDetail(key) {
+  const [id, section] = key.split("@");
+  const matches = getActions(id);
+  const pick = matches.find((a) => a.section === section) || matches[0];
+  if (!pick) return el("div", { class: "state" }, el("div", { text: `No action with id '${id}'.` }));
+  const meta = sectionMeta(pick.section);
+  const invoke = meta && meta.invoke ? meta.invoke.replace(/\bcmd\b/, id) : null;
+  const others = matches.filter((a) => a.section !== pick.section);
+  const overviewCaveat =
+    pick.source === "sws"
+      ? "SWS actions are registered by an extension; call them via NamedCommandLookup('_NAME') rather than hardcoding the numeric ID where possible."
+      : null;
+  return el("div", null, [
+    el("h2", { class: "sentence", text: pick.name }),
+    el("div", { class: "metarow" }, [
+      el("span", { class: "badge sec", text: pick.section }),
+      pick.category ? el("span", { class: "badge", text: pick.category }) : el("span", { class: "badge", text: "no category" }),
+      el("span", { class: "badge " + pick.source, text: pick.source }),
+      el("span", { class: "badge lang on", text: "id " + pick.id }),
+    ]),
+    el("div", { class: "sect-h", text: "invoke from ReaScript" }),
+    invoke
+      ? el("div", { class: "sig" }, [invoke, copyButton(() => invoke)])
+      : el("div", { class: "hint", text: `This dataset carries no invoke template for section '${pick.section}'.` }),
+    meta && meta.notes ? el("div", { class: "hint", style: "margin-top:6px", text: meta.notes }) : null,
+    overviewCaveat ? el("div", { class: "warn", style: "margin-top:8px", text: overviewCaveat }) : null,
+    others.length
+      ? el("div", { style: "margin-top:14px" }, [
+          el("div", { class: "warn" }, [
+            `id '${id}' is ${matches.length} different actions, one per section. Command ids are unique only within a section, so this id is not usable on its own: `,
+          ]),
+          el("div", { class: "ym", style: "margin-top:6px" }, others.map((o) =>
+            el("button", {
+              type: "button",
+              text: `${o.section} — ${o.name}`.slice(0, 120),
+              onclick: () => select(`${o.id}@${o.section}`),
+            })
+          )),
+        ])
+      : null,
+    meta && meta.contexts && meta.contexts.length
+      ? el("div", null, [
+          el("div", { class: "sect-h", text: `section contexts (${meta.contexts.length})` }),
+          el("div", { class: "hint", title: meta.contexts.join(", "), text: meta.contexts.slice(0, 6).join(", ") + (meta.contexts.length > 6 ? ` … +${meta.contexts.length - 6} more` : "") }),
+        ])
+      : null,
+  ]);
+}
+
+/** One-line description of what is sitting in localStorage, for the about pane. */
+function describeSaved() {
+  const saved = Object.entries(savedMap());
+  if (!saved.length) return "Nothing saved yet: drop the data files and they will be kept here.";
+  return (
+    saved.length + " dataset(s) saved, " + mb(saved.reduce((n, [, v]) => n + (v.stored || 0), 0)) + ": " +
+    saved.map(([k, v]) => `${k} from ${v.file} (${v.encoding}, saved ${String(v.saved_at).slice(0, 10)})`).join("; ")
+  );
+}
+
+function aboutView() {
+  const ix = IDX.actions;
+  const ov = ix ? ix.raw : null;
+  return el("div", null, [
+    el("h2", { text: "About these datasets" }),
+    el("div", { class: "hint", text: "The same three files the MCP server reads, the same ranking applied here. Nothing is precomputed or cached in this page." }),
+    el("div", { class: "sect-h", text: "datasets" }),
+    el("table", { class: "params" }, [
+      ["reascript-api.json", IDX.reascript ? `${IDX.reascript.total} functions · scraped ${IDX.reascript.scraped_at}` : "not loaded"],
+      ["actions-api.json", ix ? `${ix.total} actions · ${ix.generated_by} · scraped ${ix.scraped_at}` : "not loaded"],
+      ["jsfx-api.json", IDX.jsfx ? `${IDX.jsfx.total} built-ins · scraped ${IDX.jsfx.scraped_at}` : "not loaded"],
+    ].map(([a, b]) => el("tr", null, [el("td", { class: "n", text: a }), el("td", { text: b })]))),
+    el("div", { class: "sect-h", text: "this browser" }),
+    el("div", { class: "hint", text: storageAvailable()
+      ? `localStorage is writable here (${location.protocol}// page). ${describeSaved()}`
+      : "localStorage is not writable from this page, so dropped files cannot be kept. Serve the folder over HTTP, or use Chrome or Firefox." }),
+    Object.keys(savedMap()).length
+      ? el("button", { class: "linkbtn", type: "button", style: "margin-top:6px", text: "clear the saved files", onclick: () => { forgetAllDatasets(); state.notice = "saved files cleared."; render(); } })
+      : null,
+    ix
+      ? el("div", null, [
+          el("div", { class: "sect-h", text: "action sections" }),
+          el("table", { class: "params" }, ix.sections.map((s) =>
+            el("tr", null, [
+              el("td", { class: "n", text: s.name }),
+              el("td", { text: `${s.action_count}` }),
+              el("td", { class: "t", text: s.invoke || "—" }),
+            ])
+          )),
+          el("div", { class: "sect-h", text: `categories (${ix.categories.length})` }),
+          el("div", { class: "hint" }, ix.categories.map((c) =>
+            el("button", {
+              class: "linkbtn",
+              type: "button",
+              style: "margin:0 8px 4px 0",
+              text: `${c} ${ix.categoryCounts.get(c)}`,
+              onclick: () => { state.category = c; state.section = ""; syncControls(); runSearch(); render(); },
+            })
+          )),
+        ])
+      : null,
+    el("div", { class: "sect-h", text: "caveats" }),
+    ...[
+      "Command IDs are unique only within a section - always disambiguate with the section. The same numeric ID refers to different actions in different sections.",
+      "Sourced from an actions-list export of one specific REAPER install and its installed extensions, so IDs and coverage can differ between versions and installs.",
+      "SWS actions are registered by an extension; call them via NamedCommandLookup('_NAME') rather than hardcoding the numeric ID where possible.",
+      "Non-SWS third party actions (Helgobox, ReaPack) and the per-install ReaScript actions (named 'Script: something.lua') were excluded from this dataset.",
+    ].map((c) => el("div", { class: "hint", style: "margin-bottom:6px", text: "· " + c })),
+  ]);
+}
+
+function renderDetail() {
+  const d = $("#detail");
+  d.textContent = "";
+  if (state.view === "about") { d.appendChild(aboutView()); d.scrollTop = 0; return; }
+  if (!ready()) { d.appendChild(el("div", { class: "state" }, el("div", { class: "hint", text: "Nothing loaded yet." }))); return; }
+  if (!state.sel) {
+    d.appendChild(el("div", { class: "state" }, el("div", { class: "hint", text: "Pick a result to read its description, signatures and parameters." })));
+    return;
+  }
+  d.appendChild(state.tab === "ac" ? actionDetail(state.sel) : functionDetail(state.sel.replace(/^fn:/, "")));
+  d.scrollTop = 0;
+}
+
+/* ---------------------------------------------------------------- chrome */
+
+function renderTabs() {
+  const nav = $("#tabs");
+  nav.textContent = "";
+  for (const t of TABS) {
+    const count = IDX[t.dataset] ? IDX[t.dataset].total.toLocaleString() : "";
+    nav.appendChild(el("button", {
+      type: "button",
+      class: state.tab === t.key ? "on" : "",
+      title: datasetTip(t.dataset),
+      onclick: () => switchTab(t.key),
+    }, [t.label, count ? el("small", { text: count }) : null]));
+  }
+}
+
+let filtersBuiltFor = null;
+
+function renderFilters() {
+  const box = $("#filters");
+  if (filtersBuiltFor !== state.tab) {
+    box.textContent = "";
+    if (state.tab === "fn") {
+      box.appendChild(el("label", { text: "language" }));
+      box.appendChild(el("select", { id: "f-lang", onchange: (e) => { state.lang = e.target.value; state.shown = PAGE; runSearch(); render(); } },
+        [["", "any"], ["c", "c"], ["eel2", "eel2"], ["lua", "lua"], ["python", "python"]].map(([v, l]) => el("option", { value: v, text: l }))));
+    }
+    if (state.tab === "ac") {
+      box.appendChild(el("label", { text: "section" }));
+      const sec = el("select", { id: "f-section", onchange: (e) => { state.section = e.target.value; runSearch(); render(); } },
+        [["", "any"]].concat((IDX.actions ? IDX.actions.sectionNames : []).map((n) => [n, n])).map(([v, l]) => el("option", { value: v, text: l })));
+      box.appendChild(sec);
+      box.appendChild(el("label", { text: "source" }));
+      box.appendChild(el("select", { id: "f-source", onchange: (e) => { state.source = e.target.value; runSearch(); render(); } },
+        [["", "auto"], ["all", "all"], ["reaper", "reaper"], ["sws", "sws"]].map(([v, l]) => el("option", { value: v, text: l }))));
+      box.appendChild(el("label", { text: "category" }));
+      box.appendChild(el("select", { id: "f-cat", onchange: (e) => { state.category = e.target.value; runSearch(); render(); } },
+        [["", "any"]].concat((IDX.actions ? IDX.actions.categories : []).map((c) => [c, c])).map(([v, l]) => el("option", { value: v, text: l }))));
+    }
+    box.appendChild(el("label", { text: "limit" }));
+    box.appendChild(el("select", { id: "f-limit", onchange: (e) => { state.limit = e.target.value; state.shown = PAGE; runSearch(); render(); } },
+      LIMITS.map((v) => el("option", { value: v, text: v }))));
+    box.appendChild(el("button", { class: "ghost", type: "button", text: "clear", onclick: () => { state.q = ""; state.sel = null; state.lang = ""; state.section = ""; state.category = ""; state.source = ""; $("#q").value = ""; syncControls(); runSearch(); render(); } }));
+    filtersBuiltFor = state.tab;
+  }
+  syncControls();
+}
+
+function syncControls() {
+  // An unresolvable section stays in state (the error text names it); the select
+  // just falls back to "any" rather than showing a value it cannot offer.
+  const set = (sel, value) => { const n = $(sel); if (n) n.value = value; };
+  set("#f-lang", state.lang || "");
+  set("#f-section", resolveSection(state.section) || "");
+  set("#f-source", state.source || "");
+  // A category from an old URL may not be in the list; the select falls back to
+  // "any" rather than showing a value it cannot offer (state keeps it, and the
+  // echo still names it).
+  const cat = $("#f-cat");
+  if (cat) cat.value = state.category && [...cat.options].some((o) => o.value === state.category) ? state.category : "";
+  set("#f-limit", state.limit);
+  if ($("#q") && $("#q").value !== state.q) $("#q").value = state.q;
+}
+
+/**
+ * One line under the filters: how many matched, how many are on screen. The
+ * query echo the server sends (api=, query=, limit=) is deliberately not
+ * repeated here — every one of those values is already visible in the controls
+ * directly above it, and the text you typed is in the box above that.
+ */
+function renderEcho() {
+  const box = $("#echo");
+  box.textContent = "";
+  const meta = state.meta;
+  if (!meta || !ready() || !state.q.trim() || meta.error) return;
+  const total = meta.total ?? state.results.length;
+  if (!total) return;
+  box.appendChild(el("span", { class: "count" }, [el("b", { text: total.toLocaleString() }), ` ${state.tab === "ac" ? "action" : "match"}${total === 1 ? "" : "es"}`]));
+  if (state.results.length < total) {
+    box.appendChild(el("span", { class: "count" }, `showing ${state.results.length.toLocaleString()}`));
+    box.appendChild(el("span", { class: "note", text: "raise the limit or narrow the query" }));
+  }
+  if (meta.cta) box.appendChild(el("button", { type: "button", text: meta.cta.label, onclick: meta.cta.act }));
+  // The "N more matches were cut" note says what "showing N" already said.
+  for (const n of meta.notes || []) {
+    if (/more matches were cut|more matches\.$/.test(n)) continue;
+    box.appendChild(el("span", { class: "note", text: n }));
+  }
+}
+
+function render() {
+  renderTabs();
+  renderFilters();
+  renderEcho();
+  renderList();
+  renderDetail();
+  renderProvenance();
+  writeHash();
+}
+
+function switchTab(key) {
+  if (state.tab === key) return;
+  state.tab = key;
+  state.sel = null;
+  state.view = null;
+  state.notice = null;
+  state.shown = PAGE;
+  filtersBuiltFor = null;
+  render();
+  ensureDataset(key).then(() => { runSearch(); render(); });
+  $("#q").focus();
+}
+
+/* ----------------------------------------------------------------- events */
+
+let debounce = null;
+
+function wire() {
+  $("#q").addEventListener("input", (e) => {
+    state.q = e.target.value;
+    clearTimeout(debounce);
+    debounce = setTimeout(() => {
+      state.shown = PAGE;
+      runSearch();
+      renderEcho();
+      renderList();
+      writeHash();
+    }, 120);
+  });
+
+  $("#q").addEventListener("keydown", (e) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      move(e.key === "ArrowDown" ? 1 : -1);
+    } else if (e.key === "Enter") {
+      const first = currentRows()[0];
+      if (first && first.__key && !document.querySelector(".row.sel")) select(first.__key);
+    } else if (e.key === "Escape") {
+      if (state.q) { state.q = ""; e.target.value = ""; runSearch(); render(); }
+      else e.target.blur();
+    }
+  });
+
+  document.addEventListener("keydown", (e) => {
+    const typing = document.activeElement && /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
+    if (((e.key === "k" || e.key === "K") && (e.metaKey || e.ctrlKey)) || (e.key === "/" && !typing)) {
+      e.preventDefault();
+      $("#q").focus();
+      $("#q").select();
+    } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !typing) {
+      e.preventDefault();
+      move(e.key === "ArrowDown" ? 1 : -1);
+    } else if (e.key === "Escape" && !typing && state.view === "about") {
+      state.view = null;
+      render();
+    }
+  });
+
+  $("#aboutbtn").addEventListener("click", () => {
+    state.view = state.view === "about" ? null : "about";
+    render();
+  });
+
+  $("#storagebtn").addEventListener("click", () => {
+    const stored = Object.keys(savedMap());
+    if (!window.confirm(`Remove the ${stored.length} saved dataset(s) from this browser? The page keeps working until you reload.`)) return;
+    forgetAllDatasets();
+    state.notice = "saved files cleared.";
+    render();
+  });
+
+  window.addEventListener("hashchange", () => {
+    readHash();
+    filtersBuiltFor = null;
+    ensureDataset(tabDef().dataset).then(() => { runSearch(); render(); });
+  });
+
+  const app = $("#app");
+  window.addEventListener("dragover", (e) => { e.preventDefault(); app.classList.add("drag"); });
+  window.addEventListener("dragleave", (e) => { if (e.relatedTarget === null) app.classList.remove("drag"); });
+  window.addEventListener("drop", (e) => {
+    e.preventDefault();
+    app.classList.remove("drag");
+    if (e.dataTransfer && e.dataTransfer.files.length) loadFiles(e.dataTransfer.files);
+  });
+}
+
+async function boot() {
+  readHash();
+  wire();
+  render();
+  const ok = await ensureDataset(tabDef().dataset);
+  runSearch();
+  render();
+  if (!ok) return;
+  // Warm the other two in the background so switching tabs is instant.
+  setTimeout(async () => {
+    for (const t of TABS) {
+      if (!RAW[t.dataset]) { await ensureDataset(t.dataset, true); renderProvenance(); renderTabs(); }
+    }
+  }, 600);
+}
+
+document.addEventListener("DOMContentLoaded", boot);
+</script>
+</body>
+</html>

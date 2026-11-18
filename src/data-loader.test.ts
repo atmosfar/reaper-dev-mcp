@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from "vitest";
-import { DataLoader } from "./data-loader.js";
+import { DataLoader, nameTier } from "./data-loader.js";
 
 describe("DataLoader", () => {
   let loader: DataLoader;
@@ -62,6 +62,47 @@ describe("DataLoader", () => {
     it("should handle case-insensitive search", () => {
       const results = loader.searchReaScriptFunctions("trackfx");
       expect(results.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe("relevance ranking", () => {
+    // "How many keywords matched somewhere" cannot tell a name from its prose, so
+    // everything scored 2 and ties fell to alphabetical order: 'count tracks'
+    // returned BR_GetMediaTrackSendInfo_Envelope, whose description says "…to
+    // count track sends…", ahead of CountTracks.
+    it("puts the function whose name IS the query first", () => {
+      expect(loader.searchReaScriptFunctions("count tracks")[0].name).toBe("CountTracks");
+      expect(loader.searchReaScriptFunctions("GetMediaItem")[0].name).toBe("GetMediaItem");
+    });
+
+    it("prefers a name carrying every keyword over prose mentioning them", () => {
+      const names = loader.searchReaScriptFunctions("track fx param").slice(0, 5).map((f) => f.name);
+      expect(names[0]).toBe("TrackFX_GetParam");
+      expect(names).toContain("TrackFX_SetParam");
+    });
+
+    it("breaks a tie by closeness, not by spelling luck", () => {
+      const names = loader.searchReaScriptFunctions("insert envelope point").map((f) => f.name);
+      expect(names.indexOf("InsertEnvelopePoint")).toBeLessThan(names.indexOf("Envelope_SortPoints"));
+    });
+
+    it("ranks actions the same way", () => {
+      expect(loader.searchActions("zoom time selection")[0].name).toBe("View: Zoom time selection");
+    });
+
+    it("leaves a command id search alone", () => {
+      expect(loader.searchActions("41075").every((a) => a.id === "41075")).toBe(true);
+    });
+
+    it("tiers names: exact, prefix, every word present, nothing", () => {
+      expect(nameTier(["count", "tracks"], "CountTracks")).toBe(1000);
+      expect(nameTier(["media", "item"], "MediaItem_Take")).toBe(500);
+      expect(nameTier(["count", "tracks"], "CountSelectedTracks")).toBe(200);
+      expect(nameTier(["track", "fx", "param"], "TrackFX_GetParam")).toBe(200);
+      // 'count' is only in this one's description; 'fx' has no word boundary
+      expect(nameTier(["count", "tracks"], "BR_GetMediaTrackSendInfo_Envelope")).toBe(0);
+      expect(nameTier(["count", "tracks"], "GetNumTracks")).toBe(0);
+      expect(nameTier([], "CountTracks")).toBe(0);
     });
   });
 

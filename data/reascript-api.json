@@ -199340,7 +199340,8 @@
       "time_precise"
     ]
   },
-  "scraped_at": "2026-11-12T11:28:43.007507",
+  "generated_by": "v7.85/macOS-arm64",
+  "scraped_at": "2026-11-18T07:10:18.262667",
   "total_unique_functions": 2367,
   "counts_by_language": {
     "c": 2176,

@@ -37,7 +37,7 @@ export function tokenize(name: string): string[] {
 }
 
 /** Cheap English-ish stem: items -> item, takes -> take, but leaves "fx", "s" alone. */
-function stem(token: string): string {
+export function stem(token: string): string {
   if (token.endsWith("ies") && token.length > 4) return token.slice(0, -3) + "y";
   if (token.endsWith("s") && !token.endsWith("ss") && token.length > 3) return token.slice(0, -1);
   return token;
