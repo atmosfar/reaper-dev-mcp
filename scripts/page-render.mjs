@@ -13,10 +13,23 @@ import { DataLoader } from "../dist/data-loader.js";
 const registry = new Map();
 let allNodes = [];
 
+function makeStyle() {
+  // mirrors CSSStyleDeclaration closely enough: plain properties plus the
+  // custom-property methods the page uses for the pane split
+  const s = {
+    setProperty(k, v) { s[k] = String(v); },
+    removeProperty(k) { delete s[k]; },
+  };
+  return s;
+}
+
 function makeNode(tag) {
   const node = {
     tagName: tag.toUpperCase(),
-    style: {},
+    style: makeStyle(),
+    setPointerCapture() {},
+    releasePointerCapture() {},
+    getBoundingClientRect() { return { left: 0, top: 0, width: 1200, height: 800, right: 1200, bottom: 800 }; },
     children: [],
     attrs: {},
     classes: [],
@@ -52,6 +65,13 @@ function makeNode(tag) {
         add: (c) => { if (!node.classes.includes(c)) node.classes.push(c); },
         remove: (c) => { node.classes = node.classes.filter((x) => x !== c); },
         contains: (c) => node.classes.includes(c),
+        toggle: (c, force) => {
+          const has = node.classes.includes(c);
+          const want = force === undefined ? !has : !!force;
+          if (want && !has) node.classes.push(c);
+          if (!want && has) node.classes = node.classes.filter((x) => x !== c);
+          return want;
+        },
       };
     },
     get textContent() {
@@ -156,7 +176,7 @@ const html = fs.readFileSync("webpage/index.html", "utf8");
 const script = html.slice(html.indexOf("<script>") + 8, html.lastIndexOf("</script>"));
 
 // The static markup the page expects to find, pre-registered by id.
-for (const id of ["app", "tabs", "q", "filters", "echo", "list", "detail", "about", "aboutbtn", "storagebtn"]) {
+for (const id of ["app", "tabs", "q", "filters", "echo", "list", "detail", "about", "aboutbtn", "storagebtn", "main", "gutter", "widthbtn"]) {
   const node = makeNode("div");
   node.setAttribute("id", id);
   body.appendChild(node);
@@ -506,6 +526,28 @@ await (async () => {
   registry.get("storagebtn").dispatch("click");
   check("clear: storage emptied", ![...lsStore.keys()].some((k) => k.startsWith(app.LS_NS) && k !== app.LS_NS + "meta"), [...lsStore.keys()].join(" "));
   check("clear: loaded data survives the clear this session", !!app.RAW.reascript);
+
+  /* -------- layout: the resizable split and the width mode --------------- */
+  const mainEl = registry.get("main");
+  const gutterEl = registry.get("gutter");
+  const widthBtn = registry.get("widthbtn");
+  check("layout: compact is the default block", registry.get("app").classes.includes("compact"), registry.get("app").className);
+  check("layout: split starts at the default", mainEl.style["--split"] === undefined, String(mainEl.style["--split"]));
+  gutterEl.dispatch("pointerdown", { pointerId: 1, clientX: 0 });
+  gutterEl.dispatch("pointermove", { clientX: 600 }); // 600 of the 1200-wide fake
+  gutterEl.dispatch("pointerup", { pointerId: 1 });
+  check("layout: drag sets the split", mainEl.style["--split"] === "50.0%", String(mainEl.style["--split"]));
+  check("layout: the split is remembered", lsStore.get(app.LS_NS + "split") === "50.0%", String(lsStore.get(app.LS_NS + "split")));
+  gutterEl.dispatch("keydown", { key: "ArrowLeft" });
+  check("layout: arrow keys nudge the split", mainEl.style["--split"] === "48%", String(mainEl.style["--split"]));
+  gutterEl.dispatch("dblclick");
+  check("layout: double-click resets it", mainEl.style["--split"] === undefined && lsStore.get(app.LS_NS + "split") === undefined, String(mainEl.style["--split"]));
+  check("layout: the width toggle names wide", widthBtn.textContent === "layout: compact", widthBtn.textContent);
+  widthBtn.dispatch("click");
+  check("layout: wide removes the block", !registry.get("app").classes.includes("compact") && widthBtn.textContent === "layout: wide", registry.get("app").className);
+  check("layout: the width mode is remembered", lsStore.get(app.LS_NS + "width") === "wide", String(lsStore.get(app.LS_NS + "width")));
+  widthBtn.dispatch("click");
+  check("layout: back to compact", registry.get("app").classes.includes("compact"), registry.get("app").className);
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length} checks passed, ${failed.length} failed`);
