@@ -329,10 +329,21 @@ await (async () => {
   app.state.lang = "lua";
   app.runSearch();
   app.render();
-  check("detail lang: lua-only note", detailText().includes("Only the lua binding"), detailText().slice(0, 120));
+  check("detail lang: no explainer note", !detailText().includes("Only the"), detailText().slice(0, 120));
   check("detail lang: one binding only", (detailText().match(/⧉/g) || []).length === 1, detailText().slice(0, 80));
   app.state.lang = "";
   app.render();
+
+  // the badges under the title are the language filter, in badge form
+  const langBadges = () => registry.get("detail").descendants().filter((n) => n.tagName === "BUTTON" && n.classes.includes("lang"));
+  check("detail: language badges are buttons", langBadges().length >= 2, String(langBadges().length));
+  langBadges().find((b) => b.textContent === "lua").dispatch("click");
+  check("detail: badge click solos the language", app.state.lang === "lua" && registry.get("f-lang").value === "lua", `lang=${app.state.lang} select=${registry.get("f-lang").value}`);
+  check("detail: solo shows one binding", (detailText().match(/⧉/g) || []).length === 1, detailText().slice(0, 80));
+  check("detail: solo'd badge is marked", langBadges().find((b) => b.textContent === "lua").classes.includes("on"));
+  langBadges().find((b) => b.textContent === "lua").dispatch("click");
+  check("detail: clicking the solo'd badge shows all", app.state.lang === "" && registry.get("f-lang").value === "", `lang=${app.state.lang} select=${registry.get("f-lang").value}`);
+  check("detail: all bindings back", (detailText().match(/⧉/g) || []).length >= 4, `${(detailText().match(/⧉/g) || []).length} copy buttons`);
 
   // action detail: invoke template + shared-id warning
   app.switchTab("ac");

@@ -133,6 +133,9 @@
   .badge.sec { color: #7fb08e; border-color: #2e4136; text-transform: none; letter-spacing: 0; }
   .badge.lang { color: var(--dim); }
   .badge.lang.on { color: var(--amber); border-color: #4a3f2a; }
+  .metarow button { background: none; cursor: pointer; }
+  .metarow button.lang:hover { color: var(--text); border-color: var(--dim); }
+  .metarow button.lang.on:hover { color: var(--amber); }
 
   /* detail */
   .detail h2 { font-size: 17px; margin: 0 0 2px; font-family: var(--mono); word-break: break-word; }
@@ -1568,8 +1571,23 @@ function functionDetail(name) {
   const other = RAW[otherApi] ? getFunction(otherApi, fn.name) : null;
   return el("div", null, [
     el("h2", { text: fn.name }),
-    el("div", { class: "metarow" }, (fn.available_in || []).map((l) => el("span", { class: "badge lang" + (want === l ? " on" : ""), text: l }))),
-    want ? el("div", { class: "hint", text: `Only the ${want} binding is shown, as the server shapes it when language is passed. Clear the language filter for every binding.` }) : null,
+    // A language badge solos that binding; clicking the solo'd one shows all
+    // again. It is the same state as the language filter in the search box.
+    el("div", { class: "metarow" }, (fn.available_in || []).map((l) =>
+      el("button", {
+        type: "button",
+        class: "badge lang" + (want === l ? " on" : ""),
+        title: want === l ? "show all bindings" : "show only the " + l + " binding",
+        text: l,
+        onclick: () => {
+          state.lang = want === l ? "" : l;
+          state.shown = PAGE;
+          syncControls();
+          runSearch();
+          render();
+        },
+      })
+    )),
     // What it does before how to call it: the description is why you opened it.
     el("div", { class: "sect-h", text: "description" }),
     fn.description
