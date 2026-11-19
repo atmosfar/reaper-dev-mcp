@@ -241,7 +241,7 @@
             <circle cx="6.6" cy="6.6" r="4.4" fill="none" stroke="currentColor" stroke-width="1.7"/>
             <path d="M9.9 9.9 13.6 13.6" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
           </svg>
-          <input id="q" type="search" aria-label="Search" autocomplete="off" spellcheck="false">
+          <input id="q" type="search" aria-label="Search" autocomplete="off" spellcheck="false" title="words AND together · | starts an OR clause · -word excludes">
         </div>
         <div class="filters" id="filters"></div>
         <div class="echo" id="echo"></div>
@@ -846,15 +846,47 @@ function categoryMatches(category, filter) {
   return c === f || c.startsWith(f + "/") || c.includes("/" + f);
 }
 
+/**
+ * Query modifiers, page-side sugar over the server's matching:
+ *   |word    starts a new OR clause — a result may match any one clause
+ *   -word    is excluded from every clause: results matching it drop out
+ * A plain query parses to a single clause with no exclusions, so it behaves
+ * exactly as the server does (the parity harness enforces the plain case).
+ */
+function parseClauses(query) {
+  const clauses = [[]];
+  const not = [];
+  for (const tok of String(query).toLowerCase().split(/\s+/).filter((t) => t.length > 0)) {
+    let t = tok;
+    if (t.startsWith("|")) { clauses.push([]); t = t.slice(1); }
+    if (t.startsWith("-")) { if (t.length > 1) not.push(t.slice(1)); continue; }
+    if (t) clauses[clauses.length - 1].push(t);
+  }
+  return { clauses: clauses.filter((c) => c.length > 0), not };
+}
+
+/** The strongest match a candidate makes across the OR clauses. */
+function bestClauseMatch(clauses, lowerFields) {
+  let best = null;
+  for (const words of clauses) {
+    const m = matchKeywords(words, lowerFields);
+    if (m.matchedCount > 0 && (!best || m.matchedCount + m.exactBonus * 100 > best.matchedCount + best.exactBonus * 100)) {
+      best = { matchedCount: m.matchedCount, exactBonus: m.exactBonus, full: m.matchedCount === words.length };
+    }
+  }
+  return best;
+}
+
 /** search_functions {api:'reascript'} — data-loader.ts:searchReaScriptFunctions */
 function searchReaScript(query, language) {
   const ix = index("reascript");
   if (!ix) return [];
-  const rawKeywords = String(query).toLowerCase().split(/\s+/).filter((k) => k.length > 0);
-  if (!rawKeywords.length) return [];
+  const { clauses, not } = parseClauses(query);
+  if (!clauses.length) return [];
+  const words = clauses.flat();
 
   let extractedLang = null;
-  outer: for (const kw of rawKeywords) {
+  outer: for (const kw of words) {
     for (const [lang, aliases] of Object.entries(FUNCTION_LANG_KEYWORDS)) {
       if (aliases.includes(kw)) { extractedLang = lang; break outer; }
     }
@@ -863,8 +895,10 @@ function searchReaScript(query, language) {
 
   const scored = [];
   for (const f of ix.fns) {
-    const { matchedCount, exactBonus } = matchKeywords(rawKeywords, [f._n, f._d]);
-    if (matchedCount > 0) scored.push({ f, sim: similarity(query, f.name), score: matchedCount + exactBonus * 100 + nameTier(rawKeywords, f.name) });
+    const m = bestClauseMatch(clauses, [f._n, f._d]);
+    if (!m) continue;
+    if (not.length && not.some((w) => matchKeywords([w], [f._n, f._d]).matchedCount > 0)) continue;
+    scored.push({ f, sim: similarity(query, f.name), score: m.matchedCount + m.exactBonus * 100 + nameTier(words, f.name) });
   }
   scored.sort((a, b) => compareRanked(a, b, (r) => r.f.name));
   let out = scored.map((s) => s.f);
@@ -878,12 +912,15 @@ function searchReaScript(query, language) {
 function searchJSFX(query) {
   const ix = index("jsfx");
   if (!ix) return [];
-  const rawKeywords = String(query).toLowerCase().split(/\s+/).filter((k) => k.length > 0);
-  if (!rawKeywords.length) return [];
+  const { clauses, not } = parseClauses(query);
+  if (!clauses.length) return [];
+  const words = clauses.flat();
   const scored = [];
   for (const f of ix.fns) {
-    const { matchedCount, exactBonus } = matchKeywords(rawKeywords, [f._n, f._d, f._c]);
-    if (matchedCount > 0) scored.push({ f, sim: similarity(query, f.name), score: matchedCount + exactBonus * 100 + nameTier(rawKeywords, f.name) });
+    const m = bestClauseMatch(clauses, [f._n, f._d, f._c]);
+    if (!m) continue;
+    if (not.length && not.some((w) => matchKeywords([w], [f._n, f._d, f._c]).matchedCount > 0)) continue;
+    scored.push({ f, sim: similarity(query, f.name), score: m.matchedCount + m.exactBonus * 100 + nameTier(words, f.name) });
   }
   scored.sort((a, b) => compareRanked(a, b, (r) => r.f.name));
   return scored.map((s) => s.f);
@@ -893,13 +930,14 @@ function searchJSFX(query) {
 function searchActions(query, filters = {}) {
   const ix = index("actions");
   if (!ix) return [];
-  const rawKeywords = String(query).toLowerCase().split(/\s+/).filter((k) => k.length > 0);
-  if (!rawKeywords.length) return [];
+  const { clauses, not } = parseClauses(query);
+  if (!clauses.length) return [];
+  const words = clauses.flat();
 
   let sourceFilter = filters.source ? String(filters.source).trim().toLowerCase() : null;
   if (!sourceFilter) {
-    if (rawKeywords.some((k) => k === "sws" || k === "xenakios")) sourceFilter = "sws";
-    else if (rawKeywords.some((k) => k === "reaper" || k === "stock")) sourceFilter = "reaper";
+    if (words.some((k) => k === "sws" || k === "xenakios")) sourceFilter = "sws";
+    else if (words.some((k) => k === "reaper" || k === "stock")) sourceFilter = "reaper";
   }
   if (sourceFilter === "all" || sourceFilter === "any") sourceFilter = null;
   if (sourceFilter === "stock") sourceFilter = "reaper";
@@ -912,11 +950,13 @@ function searchActions(query, filters = {}) {
     if (sourceFilter && action.source !== sourceFilter) continue;
     if (sectionFilter && action.section !== sectionFilter) continue;
     if (categoryFilter && !categoryMatches(action.category, categoryFilter)) continue;
-    const { matchedCount, exactBonus } = matchKeywords(rawKeywords, [action._n, action._c, action._i]);
-    if (matchedCount > 0) scored.push({ action, matchedCount, sim: similarity(query, action.name), score: matchedCount + exactBonus * 100 + nameTier(rawKeywords, action.name) });
+    const m = bestClauseMatch(clauses, [action._n, action._c, action._i]);
+    if (!m) continue;
+    if (not.length && not.some((w) => matchKeywords([w], [action._n, action._c, action._i]).matchedCount > 0)) continue;
+    scored.push({ action, full: m.full, sim: similarity(query, action.name), score: m.matchedCount + m.exactBonus * 100 + nameTier(words, action.name) });
   }
 
-  const fullMatches = scored.filter((r) => r.matchedCount === rawKeywords.length);
+  const fullMatches = scored.filter((r) => r.full);
   const candidates = fullMatches.length > 0 ? fullMatches : scored;
   candidates.sort((a, b) => {
     if (b.score !== a.score) return b.score - a.score;
@@ -976,7 +1016,6 @@ const TABS = [
   { key: "ac", label: "Actions", dataset: "actions" },
   { key: "jx", label: "JSFX", dataset: "jsfx", api: "jsfx" },
 ];
-const LIMITS = ["10", "25", "50", "100", "all"];
 const PAGE = 100;
 
 const state = {
@@ -986,7 +1025,6 @@ const state = {
   section: "",
   category: "",
   source: "",
-  limit: "50",
   sel: null,
   shown: PAGE,
   results: [],
@@ -1139,7 +1177,6 @@ function writeHash() {
     if (state.category) p.set("category", state.category);
     if (state.source) p.set("source", state.source);
   }
-  if (state.limit !== "50") p.set("limit", state.limit);
   if (state.sel) p.set("sel", state.sel);
   const next = "#" + p.toString();
   if (next !== location.hash) history.replaceState(null, "", next);
@@ -1154,16 +1191,11 @@ function readHash() {
   state.section = p.get("section") || "";
   state.category = p.get("category") || "";
   state.source = p.get("source") || "";
-  state.limit = p.get("limit") || "50";
   state.sel = p.get("sel") || null;
   state.shown = PAGE;
 }
 
 /* ------------------------------------------------------------------ search */
-
-function effectiveLimit() {
-  return state.limit === "all" ? Infinity : Number(state.limit);
-}
 
 /** Compute the result set plus the echo/notes a matching tool call would send. */
 function runSearch() {
@@ -1174,7 +1206,6 @@ function runSearch() {
   if (!ready() || !state.q.trim()) { state.meta = out; return; }
 
   const q = state.q.trim();
-  const limit = effectiveLimit();
 
   if (tab.key === "fn") {
     if (isNumeric(q)) {
@@ -1185,9 +1216,9 @@ function runSearch() {
     }
     const lang = toLang(state.lang || undefined);
     const all = searchReaScript(q, state.lang || undefined);
-    state.results = all.slice(0, limit);
+    state.results = all;
     out.total = all.length;
-    out.echo.push(["api", tab.api], ["query", q], ["limit", state.limit]);
+    out.echo.push(["api", tab.api], ["query", q]);
     if (lang) out.echo.push(["language", lang]);
     if (all.length === 0) {
       out.error = `No ${tab.api} function matches '${q}'.`;
@@ -1195,8 +1226,6 @@ function runSearch() {
       const broadest = q.split(/\s+/).sort((a, b) => b.length - a.length).slice(0, 1).join(" ").toLowerCase();
       out.notes.push(`Keywords are matched against function names and their descriptions; a word that only appears in prose will not match a name.`);
       if (broadest !== q.toLowerCase()) out.cta = { label: `broader: ${broadest}`, act: () => setQuery(broadest) };
-    } else if (all.length > limit) {
-      out.notes.push(`${all.length - limit} more matches were cut — raise limit or narrow the query.`);
     }
     state.meta = out;
     return;
@@ -1204,17 +1233,15 @@ function runSearch() {
 
   if (tab.key === "jx") {
     const all = searchJSFX(q);
-    state.results = all.slice(0, limit);
+    state.results = all;
     out.total = all.length;
-    out.echo.push(["api", "jsfx"], ["query", q], ["limit", state.limit]);
+    out.echo.push(["api", "jsfx"], ["query", q]);
     if (state.lang) out.notes.push("JSFX built-ins are Eel2 only, so the language filter had no effect.");
     if (all.length === 0) {
       out.error = `No jsfx function matches '${q}'.`;
       out.didYouMean = rankCandidates(q, IDX.jsfx.names);
       const broadest = q.split(/\s+/).sort((a, b) => b.length - a.length)[0] || q;
       out.cta = { label: `broader: ${broadest}`, act: () => setQuery(broadest) };
-    } else if (all.length > limit) {
-      out.notes.push(`${all.length - limit} more matches were cut.`);
     }
     state.meta = out;
     return;
@@ -1234,10 +1261,10 @@ function runSearch() {
     category: state.category || undefined,
     source: state.source || undefined,
   });
-  state.results = all.slice(0, limit);
+  state.results = all;
   out.total = all.length;
   out.sectionResolved = state.section && resolvedSection && resolvedSection !== state.section ? resolvedSection : null;
-  out.echo.push(["query", q], ["limit", state.limit]);
+  out.echo.push(["query", q]);
   if (resolvedSection) out.echo.push(["section", resolvedSection]);
   if (state.category) out.echo.push(["category", state.category]);
   if (state.source && state.source !== "all") out.echo.push(["source", state.source]);
@@ -1263,8 +1290,6 @@ function runSearch() {
       out.notes.push("Every keyword must match; try removing your least certain word.");
     }
     out.notes.push("The sections and categories available are listed under 'about / caveats'.");
-  } else if (all.length > limit) {
-    out.notes.push(`${all.length - limit} more matches were cut — raise limit or narrow the query.`);
   }
   if (out.sectionResolved) out.notes.push(`section '${state.section}' resolved to '${out.sectionResolved}'.`);
   state.meta = out;
@@ -1283,10 +1308,9 @@ function setQuery(value) {
 /* ------------------------------------------------------------- highlighting */
 
 function needles() {
-  return (state.q || "")
-    .toLowerCase()
-    .split(/\s+/)
-    .map((w) => w.trim())
+  // the words as they appear in names, so the modifier prefixes are dropped
+  return parseClauses(state.q || "")
+    .clauses.flat()
     .filter((w) => w.length >= 2)
     .sort((a, b) => b.length - a.length);
 }
@@ -1347,7 +1371,7 @@ function renderList() {
     list.appendChild(el("button", {
       class: "more",
       type: "button",
-      text: `show ${Math.min(PAGE, state.results.length - shown.length)} more of ${state.results.length} (limit ${state.limit})`,
+      text: `show ${Math.min(PAGE, state.results.length - shown.length)} more of ${state.results.length}`,
       onclick: () => { state.shown += PAGE; renderList(); },
     }));
   } else if (state.results.length > PAGE) {
@@ -1781,9 +1805,6 @@ function renderFilters() {
       box.appendChild(el("select", { id: "f-cat", onchange: (e) => { state.category = e.target.value; runSearch(); render(); } },
         [["", "any"]].concat((IDX.actions ? IDX.actions.categories : []).map((c) => [c, c])).map(([v, l]) => el("option", { value: v, text: l }))));
     }
-    box.appendChild(el("label", { text: "limit" }));
-    box.appendChild(el("select", { id: "f-limit", onchange: (e) => { state.limit = e.target.value; state.shown = PAGE; runSearch(); render(); } },
-      LIMITS.map((v) => el("option", { value: v, text: v }))));
     box.appendChild(el("button", { class: "ghost", type: "button", text: "clear", onclick: () => { state.q = ""; state.sel = null; state.lang = ""; state.section = ""; state.category = ""; state.source = ""; $("#q").value = ""; syncControls(); runSearch(); render(); } }));
     filtersBuiltFor = state.tab;
   }
@@ -1802,7 +1823,6 @@ function syncControls() {
   // echo still names it).
   const cat = $("#f-cat");
   if (cat) cat.value = state.category && [...cat.options].some((o) => o.value === state.category) ? state.category : "";
-  set("#f-limit", state.limit);
   if ($("#q") && $("#q").value !== state.q) $("#q").value = state.q;
 }
 
@@ -1820,10 +1840,6 @@ function renderEcho() {
   const total = meta.total ?? state.results.length;
   if (!total) return;
   box.appendChild(el("span", { class: "count" }, [el("b", { text: total.toLocaleString() }), ` ${state.tab === "ac" ? "action" : "match"}${total === 1 ? "" : "es"}`]));
-  if (state.results.length < total) {
-    box.appendChild(el("span", { class: "count" }, `showing ${state.results.length.toLocaleString()}`));
-    box.appendChild(el("span", { class: "note", text: "raise the limit or narrow the query" }));
-  }
   if (meta.cta) box.appendChild(el("button", { type: "button", text: meta.cta.label, onclick: meta.cta.act }));
   // The "N more matches were cut" note says what "showing N" already said.
   for (const n of meta.notes || []) {

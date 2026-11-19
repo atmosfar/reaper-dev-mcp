@@ -248,7 +248,6 @@ function reset(hash) {
   app.state.section = "";
   app.state.category = "";
   app.state.source = "";
-  app.state.limit = "50";
   app.state.view = null;
   app.state.shown = 100;
 }
@@ -378,19 +377,33 @@ await (async () => {
   check("about: sections table", detailText().includes("MIDI Editor") && detailText().includes("Crossfade Editor"));
   registry.get("aboutbtn").dispatch("click");
 
-  // limit and pagination
+  // no result cap: every match is kept, and the list pages
   app.switchTab("ac");
   await settle("actions");
-  app.state.limit = "10";
   app.setQuery("track");
-  check("limit: caps rows at 10", rowTitles().length === 10, `rows=${rowTitles().length}`);
-  check("limit: truncation said once", /showing 10/.test(echoText()) && /raise the limit or narrow the query/.test(echoText()), echoText());
-  check("limit: not also as a cut note", !/more matches were cut/.test(echoText()), echoText());
+  check("limit: no cap, all matches kept", app.state.results.length > 100, `matches=${app.state.results.length}`);
+  check("limit: first page rendered", rowTitles().length === 100, `rows=${rowTitles().length}`);
+  const moreBtn = registry.get("list").descendants().find((n) => n.tagName === "BUTTON" && n.classes.includes("more"));
+  check("limit: more button names the rest", !!moreBtn && /show \d+ more of \d+/.test(moreBtn.textContent) && !/limit/.test(moreBtn.textContent), moreBtn ? moreBtn.textContent : "none");
+  moreBtn.dispatch("click");
+  check("limit: more extends the list", rowTitles().length > 100, `rows=${rowTitles().length}`);
+
+  /* -------- query modifiers: | for OR clauses, -word for exclusions ------- */
+  app.setQuery("track -sws");
+  {
+    const t = rowTitles();
+    check("modifiers: -word excludes (track -sws)", t.length > 0 && !t.some((x) => /sws/i.test(x)), `rows=${t.length}: ${t.slice(0, 3).join(", ")}`);
+  }
+  app.switchTab("fn");
+  await settle("reascript");
+  app.setQuery("|CountTracks |AddMediaItemToTrack");
+  check("modifiers: | unions OR clauses", rowTitles().includes("CountTracks") && rowTitles().includes("AddMediaItemToTrack"), rowTitles().slice(0, 4).join(", "));
+  app.setQuery("CountTracks -Count");
+  check("modifiers: -word can empty the results", rowTitles().length === 0, `rows=${rowTitles().length}`);
 
   /* -------- ranking: the cases that were wrong ----------------------------- */
   app.switchTab("fn");
   await settle("reascript");
-  app.state.limit = "50";
   app.setQuery("count tracks");
   check("rank: 'count tracks' leads with CountTracks", rowTitles()[0] === "CountTracks", rowTitles().slice(0, 3).join(", "));
   app.setQuery("track fx param");
