@@ -1894,8 +1894,11 @@ function wire() {
     } else if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !typing) {
       e.preventDefault();
       move(e.key === "ArrowDown" ? 1 : -1);
-    } else if (e.key === "Escape" && !typing && state.view === "about") {
-      state.view = null;
+    } else if (e.key === "Escape" && !typing) {
+      // the footer promises "esc clear": close the about panel if it is up,
+      // otherwise clear the search (query and selection); filters stay put
+      if (state.view === "about") state.view = null;
+      else { state.q = ""; state.sel = null; $("#q").value = ""; runSearch(); }
       render();
     }
   });

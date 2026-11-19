@@ -41,6 +41,7 @@ function makeNode(tag) {
     isFragment: tag === "#fragment",
     _text: "",
     focus() { document.activeElement = node; },
+    blur() { if (document.activeElement === node) document.activeElement = null; },
     select() {},
     scrollIntoView() {},
     setAttribute(k, v) {
@@ -559,6 +560,24 @@ await (async () => {
   check("layout: the width mode is remembered", lsStore.get(app.LS_NS + "width") === "wide", String(lsStore.get(app.LS_NS + "width")));
   widthBtn.dispatch("click");
   check("layout: back to compact", registry.get("app").classes.includes("compact"), registry.get("app").className);
+
+  /* -------- Esc: the footer's "esc clear" ---------------------------------- */
+  const docKey = (key) => {
+    document.activeElement = null;
+    const e = { key, metaKey: false, ctrlKey: false, target: null, preventDefault() {}, stopPropagation() {} };
+    for (const fn of document.listeners["keydown"] || []) fn(e);
+  };
+  app.state.tab = "fn";
+  app.state.q = "envelope";
+  app.state.sel = "fn:Envelope_Add";
+  app.runSearch();
+  app.render();
+  app.state.view = "about";
+  app.render();
+  docKey("Escape");
+  check("esc: the about panel closes first", app.state.view === null && app.state.q === "envelope", `view=${app.state.view} q=${app.state.q}`);
+  docKey("Escape");
+  check("esc: with nothing open it clears the search", app.state.q === "" && app.state.sel === null && registry.get("q").value === "", `q=${app.state.q} sel=${app.state.sel} input=${registry.get("q").value}`);
 
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length} checks passed, ${failed.length} failed`);
